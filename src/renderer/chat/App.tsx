@@ -5,7 +5,6 @@ import type {
   ProxyConfig,
   NetworkTestResult,
   SecretaryState,
-  WorkflowMacroId,
 } from '../../types'
 import {
   Square,
@@ -28,8 +27,6 @@ import {
   Camera,
   Mail,
   Cpu,
-  Clock,
-  CheckSquare,
   Plus,
   Trash2,
 } from 'lucide-react'
@@ -211,12 +208,8 @@ export default function ChatApp() {
   const [manualCookie, setManualCookie] = useState('')
   const [cookieSavedToast, setCookieSavedToast] = useState(false)
 
-  // Proactive Secretary State (Reminders, Todos, Workflows)
+  // Plugin state
   const [secretaryState, setSecretaryState] = useState<SecretaryState | null>(null)
-  const [editingWfId, setEditingWfId] = useState<WorkflowMacroId>('work')
-  const [newTodoInput, setNewTodoInput] = useState('')
-  const [newReminderTitle, setNewReminderTitle] = useState('')
-  const [newReminderMins, setNewReminderMins] = useState('25')
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -566,7 +559,7 @@ export default function ChatApp() {
           id: String(Date.now()),
           role: 'assistant',
           content:
-            '支持的电脑小秘书、工作流宏与终端快捷命令（也支持直接用自然语言吩咐）：\n```shell\n/brief          # 生成今日小秘书全量简报 (今日待办 + 未读 Gmail + 系统状态)\n/work           # 🚀 开启工作模式 (一键打开工作网页 + 启动常用软件 + 汇报简报)\n/focus [分钟]    # 🎯 开启深度专注番茄钟 (默认 25m，到点桌宠 Luna 主动冒泡提醒)\n/meeting        # 🎙️ 开启会议准备模式 (打开日历 + 设定 45m 散会纪要提醒 + 静音授权)\n/off            # 🌙 开启收工复盘模式 (汇总今日待办 + 检查后台进程 + 一键锁屏授权)\n/remind <时间> <事> # 设定闹钟提醒 (如: /remind 25m 复盘代码，或直接说"20分钟后提醒我...")\n/todo [待办内容] # 查看或新增今日待办事项 (如: /todo 发版 v0.2)\n/plugin <修改需求> # 🎨 让 Luna 自修改界面或挂载小功能 (如: 换成赛博朋克主题 / 增加一个小闹钟 / 给桌宠加霓虹光环)\n/reset-ui       # 一键清空所有自定义主题与插件，恢复出厂界面\n/gmail <条件>    # 打开 Gmail 按条件筛选并由 Luna 提炼邮件重点 (如: /gmail 未读)\n/screen [问题]   # 截取当前电脑桌面发送给 Luna 看图分析\n/sys            # 查看当前电脑 CPU、内存与高占用进程实时状态\n/ps <命令>       # 创建待授权的本地 PowerShell 执行卡片 (需手动点击批准)\n/settings       # 打开设置面板 (管理定时提醒、待办、工作流启动项、透明度与代理)\n/clear          # 清空当前终端缓冲区\n/exit           # 收起终端窗口 (同 Esc / Alt+Space)\n```',
+            '支持的终端快捷命令（也支持直接用自然语言吩咐）：\n```shell\n/plugin <修改需求> # 🎨 让 Luna 自修改界面或挂载小功能 (如: 换成赛博朋克主题 / 增加一个小闹钟 / 给桌宠加霓虹光环)\n/reset-ui       # 一键清空所有自定义主题与插件，恢复出厂界面\n/gmail <条件>    # 打开 Gmail 按条件筛选并由 Luna 提炼邮件重点 (如: /gmail 未读)\n/screen [问题]   # 截取当前电脑桌面发送给 Luna 看图分析\n/sys            # 查看当前电脑 CPU、内存与高占用进程实时状态\n/ps <命令>       # 创建待授权的本地 PowerShell 执行卡片 (需手动点击批准)\n/settings       # 打开设置面板 (管理插件、透明度与代理)\n/clear          # 清空当前终端缓冲区\n/exit           # 收起终端窗口 (同 Esc / Alt+Space)\n```',
           timestamp: Date.now(),
         },
       ])
@@ -1174,245 +1167,6 @@ export default function ChatApp() {
               </div>
             </div>
 
-            {/* Secretary Reminders, Todos & Workspace Workflows Editor */}
-            {secretaryState && (
-              <div className="pt-3 border-t border-white/10 space-y-3 font-terminal">
-                {/* 1. Active Reminders */}
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between text-slate-200 font-medium">
-                    <span className="flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-sky-400" />
-                      <span>主动日程提醒 (到点桌宠冒泡 + 系统通知)</span>
-                    </span>
-                    <span className="text-[10.5px] text-slate-400">
-                      {secretaryState.reminders.filter((r) => !r.fired).length} 个进行中
-                    </span>
-                  </div>
-                  <div className="flex gap-1.5">
-                    <input
-                      type="number"
-                      min={1}
-                      value={newReminderMins}
-                      onChange={(e) => setNewReminderMins(e.target.value)}
-                      placeholder="分钟"
-                      className="w-16 bg-black/40 border border-white/15 rounded-lg px-2 py-1 text-slate-100 text-xs"
-                    />
-                    <input
-                      type="text"
-                      value={newReminderTitle}
-                      onChange={(e) => setNewReminderTitle(e.target.value)}
-                      placeholder="分钟后提醒事项 (如: 复盘代码 / 参加周会)..."
-                      className="flex-1 bg-black/40 border border-white/15 rounded-lg px-2.5 py-1 text-slate-100 text-xs"
-                    />
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (!newReminderTitle.trim()) return
-                        const mins = Math.max(1, Number(newReminderMins) || 25)
-                        const st = await window.chatApi?.addSecretaryReminder(
-                          newReminderTitle.trim(),
-                          mins
-                        )
-                        if (st) setSecretaryState(st)
-                        setNewReminderTitle('')
-                      }}
-                      className="liquid-glass-pill px-2.5 py-1 rounded-lg text-sky-200 flex items-center gap-1"
-                    >
-                      <Plus className="w-3 h-3" />
-                      <span>添加</span>
-                    </button>
-                  </div>
-                  {secretaryState.reminders.filter((r) => !r.fired).length > 0 && (
-                    <div className="space-y-1 pt-1">
-                      {secretaryState.reminders
-                        .filter((r) => !r.fired)
-                        .map((rem) => (
-                          <div
-                            key={rem.id}
-                            className="flex items-center justify-between px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/10 text-[11px]"
-                          >
-                            <span className="text-slate-200 truncate">
-                              ⏰ [
-                              {new Date(rem.dueAt).toLocaleTimeString('zh-CN', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
-                              ] {rem.title}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                const st = await window.chatApi?.removeSecretaryReminder(rem.id)
-                                if (st) setSecretaryState(st)
-                              }}
-                              className="text-slate-400 hover:text-rose-400 ml-2"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          </div>
-                        ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* 2. Daily Todos */}
-                <div className="space-y-1.5 pt-2 border-t border-white/10">
-                  <div className="flex items-center justify-between text-slate-200 font-medium">
-                    <span className="flex items-center gap-1.5">
-                      <CheckSquare className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>今日待办备忘 (/todo · 纳入每日早报与收工复盘)</span>
-                    </span>
-                  </div>
-                  <div className="flex gap-1.5">
-                    <input
-                      type="text"
-                      value={newTodoInput}
-                      onChange={(e) => setNewTodoInput(e.target.value)}
-                      placeholder="新增今日待办事项..."
-                      className="flex-1 bg-black/40 border border-white/15 rounded-lg px-2.5 py-1 text-slate-100 text-xs"
-                    />
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (!newTodoInput.trim()) return
-                        const st = await window.chatApi?.addSecretaryTodo(newTodoInput.trim())
-                        if (st) setSecretaryState(st)
-                        setNewTodoInput('')
-                      }}
-                      className="liquid-glass-pill px-2.5 py-1 rounded-lg text-emerald-200 flex items-center gap-1"
-                    >
-                      <Plus className="w-3 h-3" />
-                      <span>记录</span>
-                    </button>
-                  </div>
-                  {secretaryState.todos.length > 0 && (
-                    <div className="space-y-1 pt-1 max-h-28 overflow-y-auto">
-                      {secretaryState.todos.map((t) => (
-                        <div
-                          key={t.id}
-                          className="flex items-center justify-between px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/10 text-[11px]"
-                        >
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              const st = await window.chatApi?.toggleSecretaryTodo(t.id)
-                              if (st) setSecretaryState(st)
-                            }}
-                            className={`flex items-center gap-2 text-left flex-1 truncate ${
-                              t.done ? 'line-through text-slate-500' : 'text-slate-200'
-                            }`}
-                          >
-                            <span>{t.done ? '☑' : '☐'}</span>
-                            <span className="truncate">{t.text}</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              const st = await window.chatApi?.removeSecretaryTodo(t.id)
-                              if (st) setSecretaryState(st)
-                            }}
-                            className="text-slate-400 hover:text-rose-400 ml-2"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* 3. Workspace Workflows Configurator */}
-                <div className="space-y-2 pt-2 border-t border-white/10">
-                  <div className="text-slate-200 font-medium">
-                    一键场景工作流配置 (支持在此编辑或直接对 Luna 说“把网址/软件加到工作模式”)
-                  </div>
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {(['work', 'focus', 'meeting', 'off'] as WorkflowMacroId[]).map((wfId) => (
-                      <button
-                        key={wfId}
-                        type="button"
-                        onClick={() => setEditingWfId(wfId)}
-                        className={`py-1 px-2 rounded-lg border text-[11px] transition-all ${
-                          editingWfId === wfId
-                            ? 'bg-sky-500/25 border-sky-400/60 text-sky-100'
-                            : 'bg-white/5 border-white/10 text-slate-300'
-                        }`}
-                      >
-                        {secretaryState.workflows[wfId]?.name || wfId}
-                      </button>
-                    ))}
-                  </div>
-                  {secretaryState.workflows[editingWfId] && (
-                    <div className="p-2.5 rounded-lg bg-black/40 border border-white/10 space-y-2 text-[11px]">
-                      <div className="text-slate-400">
-                        {secretaryState.workflows[editingWfId].description}
-                      </div>
-                      {(editingWfId === 'work' || editingWfId === 'meeting') && (
-                        <>
-                          <div>
-                            <div className="text-slate-300 mb-1">启动网址列表 (每行一个 URL):</div>
-                            <textarea
-                              rows={2}
-                              value={secretaryState.workflows[editingWfId].urls.join('\n')}
-                              onChange={async (e) => {
-                                const urls = e.target.value
-                                  .split('\n')
-                                  .map((s) => s.trim())
-                                  .filter(Boolean)
-                                const st = await window.chatApi?.updateWorkflowConfig(editingWfId, {
-                                  urls,
-                                })
-                                if (st) setSecretaryState(st)
-                              }}
-                              className="w-full bg-black/50 border border-white/15 rounded p-1.5 text-slate-100 text-[11px]"
-                            />
-                          </div>
-                          {editingWfId === 'work' && (
-                            <div>
-                              <div className="text-slate-300 mb-1">
-                                启动本地应用命令 (逗号分隔，如 code, notepad):
-                              </div>
-                              <input
-                                type="text"
-                                value={secretaryState.workflows[editingWfId].apps.join(', ')}
-                                onChange={async (e) => {
-                                  const apps = e.target.value
-                                    .split(',')
-                                    .map((s) => s.trim())
-                                    .filter(Boolean)
-                                  const st = await window.chatApi?.updateWorkflowConfig(
-                                    editingWfId,
-                                    { apps }
-                                  )
-                                  if (st) setSecretaryState(st)
-                                }}
-                                className="w-full bg-black/50 border border-white/15 rounded px-2 py-1 text-slate-100 text-[11px]"
-                              />
-                            </div>
-                          )}
-                        </>
-                      )}
-                      {(editingWfId === 'focus' || editingWfId === 'meeting') && (
-                        <div className="flex items-center gap-2">
-                          <span className="text-slate-300">默认倒计时分钟数:</span>
-                          <input
-                            type="number"
-                            min={1}
-                            value={secretaryState.workflows[editingWfId].defaultMinutes || 25}
-                            onChange={async (e) => {
-                              const defaultMinutes = Math.max(1, Number(e.target.value) || 25)
-                              const st = await window.chatApi?.updateWorkflowConfig(editingWfId, {
-                                defaultMinutes,
-                              })
-                              if (st) setSecretaryState(st)
-                            }}
-                            className="w-20 bg-black/50 border border-white/15 rounded px-2 py-0.5 text-slate-100"
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
 
                 {/* 4. Installed Self-Modifying UI Plugins & Widgets Manager */}
                 <div className="space-y-2 pt-2 border-t border-white/10">
@@ -1852,40 +1606,24 @@ export default function ChatApp() {
 
         {/* macOS Spotlight / Terminal Command Prompt Bar */}
         <div className="no-drag liquid-glass-prompt px-4 py-2.5">
-          {/* Proactive Briefing & Workspace Quick Macro Pills */}
-          <div className="flex items-center justify-between gap-1.5 pb-2 mb-2 border-b border-white/10 overflow-x-auto">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {[
-                { cmd: '/brief', label: '☀️ 今日简报' },
-                { cmd: '/work', label: '🚀 工作模式' },
-                { cmd: '/focus 25', label: '🎯 专注25m' },
-                { cmd: '/plugin 增加一个小闹钟', label: '⏰ 挂载小闹钟' },
-                { cmd: '/plugin 把终端改成赛博朋克主题', label: '🎨 赛博主题' },
-                { cmd: '/off', label: '🌙 收工复盘' },
-              ].map((item) => (
-                <button
-                  key={item.cmd}
-                  type="button"
-                  disabled={isStreaming}
-                  onClick={() => handleSend(item.cmd)}
-                  className="liquid-glass-pill px-2 py-0.5 rounded-md font-terminal text-[11px] text-slate-200 hover:text-sky-200 hover:border-sky-400/50 transition-all disabled:opacity-40"
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            {secretaryState &&
-              secretaryState.reminders.filter((r) => !r.fired).length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowSettings(true)}
-                  title="点击查看进行中的倒计时提醒"
-                  className="px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-400/40 font-terminal text-[10.5px] text-amber-200 flex items-center gap-1 flex-shrink-0"
-                >
-                  <Clock className="w-3 h-3 text-amber-300 animate-pulse" />
-                  <span>{secretaryState.reminders.filter((r) => !r.fired).length} 提醒</span>
-                </button>
-              )}
+          {/* Quick Plugin Pills */}
+          <div className="flex items-center gap-1.5 pb-2 mb-2 border-b border-white/10 overflow-x-auto">
+            {[
+              { cmd: '/plugin 增加一个小闹钟', label: '⏰ 挂载小闹钟' },
+              { cmd: '/plugin 把终端改成赛博朋克主题', label: '🎨 赛博主题' },
+              { cmd: '/plugin 增加一个便利贴', label: '📝 便利贴' },
+              { cmd: '/reset-ui', label: '🔄 重置界面' },
+            ].map((item) => (
+              <button
+                key={item.cmd}
+                type="button"
+                disabled={isStreaming}
+                onClick={() => handleSend(item.cmd)}
+                className="liquid-glass-pill px-2 py-0.5 rounded-md font-terminal text-[11px] text-slate-200 hover:text-sky-200 hover:border-sky-400/50 transition-all disabled:opacity-40"
+              >
+                {item.label}
+              </button>
+            ))}
           </div>
 
           <div className="flex items-center gap-2.5">
