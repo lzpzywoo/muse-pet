@@ -76,6 +76,28 @@ const chatApi: ChatApi = {
   testProxyConnection: () => {
     return ipcRenderer.invoke('proxy:test-connection')
   },
+  approveSecretaryAction: (actionId: string) => {
+    return ipcRenderer.invoke('secretary:approve-action', actionId)
+  },
+  denySecretaryAction: (actionId: string) => {
+    return ipcRenderer.invoke('secretary:deny-action', actionId)
+  },
+  runSecretaryCommand: (title: string, command: string) => {
+    return ipcRenderer.invoke('secretary:run-command', { title, command })
+  },
+  captureScreenAndAsk: (prompt?: string) => {
+    return ipcRenderer.invoke('secretary:capture-screen-and-ask', prompt)
+  },
+  openGmailFilter: (filterQuery: string) => {
+    return ipcRenderer.invoke('secretary:open-gmail-filter', filterQuery)
+  },
+  onSecretaryActionUpdated: (callback) => {
+    const subscription = (_event: any, action: any) => callback(action)
+    ipcRenderer.on('secretary:action-updated', subscription)
+    return () => {
+      ipcRenderer.removeListener('secretary:action-updated', subscription)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('chatApi', chatApi)
