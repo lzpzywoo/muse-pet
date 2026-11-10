@@ -60,7 +60,9 @@ parent: muse-pet-goal
 - **双窗口同步呈现与透明人物抠图**：`PetWindow` 采用隐藏多状态 `<video>` + 30fps `<canvas>` 实时四边界连通域洪水填充（Edge-Connected Flood Fill）与边缘反算去白边（Color Unmixing），将视频中的纯白背景完全抠除为透明（`alpha = 0`）同时完整保留人物眼白与高光细节，以无外框的纯人物立绘悬浮展示；`ChatWindow` 同步使用提取到的静态头像与智能体名称替换标题栏与消息列表图标。
 
 ### 4. 本地工具桥与电脑小秘书系统 (Local Secretary Agent Bridge)
-- **前置意图协同與多模态桥接 (`src/main/local-secretary.ts`)**：
+- **前置意图协同与多模态桥接 (`src/main/local-secretary.ts`)**：
+  - **主动日程提醒与每日简报 (`startScheduler`, `generateDailyBriefing`)**：将定时闹钟、今日待办与工作流配置持久化保存在 `userData/secretary_state.json`。后台每 3 秒巡检到期提醒，触发 Windows 原生通知（`Notification`）并通过 `onReminderFired` 驱动 `PetWindow` 进入 `talking` 姿态主动冒泡提醒；每日首次唤醒或执行 `/brief` 时汇总今日待办、未读 Gmail 与系统健康度交由 Luna 播报。
+  - **四大一键场景工作流宏 (`executeWorkflowMacro`)**：内置 `work`（工作模式）、`focus`（深度专注番茄钟）、`meeting`（会议准备模式）、`off`（收工复盘锁屏模式）四套工作流，支持通过终端 `/settings` 面板或直接用自然语言对 Luna 下令（如“把 https://notion.so 加到我的工作模式里”）动态修改启动网址与本地应用。
   - **浏览器与 Gmail 邮件助手**：将自然语言或 `/gmail` 指令自动转化为 Gmail 高级搜索语法（如 `is:unread`, `from:...`, `newer_than:7d`），一方面调用 `shell.openExternal` 在系统默认浏览器直接打开筛选页，另一方面通过共享 `persist:secretary_browser` 分区的受控窗口提取邮件列表（或网页正文），自动构造 `[MUSE_LOCAL_CONTEXT]` 注入给 Luna 汇总提炼（并在本地消息同步时自动剥离隐藏上下文标签）。
   - **桌面视觉感知 (`/screen`)**：使用 Electron `desktopCapturer` 截取当前主屏幕 1080p 画面，一方面在终端内联回显截图，另一方面通过 `DataTransfer` + React `__reactProps.onChange` 注入隐藏 `museWindow` 的 `<input type="file">`，赋予 Luna 原生多模态看屏能力。
   - **文件、剪贴板与系统状态管家 (`/sys`, `/clip`, `/find`, `/read`)**：提供系统硬件与高占用进程实时快照、剪贴板读写以及桌面/下载/文档目录的快速检索与读取。
