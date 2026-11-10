@@ -327,8 +327,7 @@ export function registerIpcHandlers(
       broadcastMessagesSynced()
 
       if (hadNewAssistant && newAssistantMsg && !museClient.isChatTurnActive()) {
-        const chatWin = windowManager.getChatWindow()
-        const isChatHidden = !chatWin || chatWin.isDestroyed() || !chatWin.isVisible()
+        const isChatHidden = !windowManager.isChatWindowVisible()
         if (isChatHidden) {
           unreadCount++
         }
@@ -352,8 +351,7 @@ export function registerIpcHandlers(
   // Pet Window events
   ipcMain.on('pet:toggle-chat', () => {
     windowManager.toggleChatWindow()
-    const chatWin = windowManager.getChatWindow()
-    if (chatWin && !chatWin.isDestroyed() && chatWin.isVisible()) {
+    if (windowManager.isChatWindowVisible()) {
       unreadCount = 0
     }
   })
@@ -564,7 +562,7 @@ export function registerIpcHandlers(
             broadcastMessagesSynced()
           }
 
-          const isChatHidden = !chatWin || chatWin.isDestroyed() || !chatWin.isVisible()
+          const isChatHidden = !windowManager.isChatWindowVisible()
           if (isChatHidden) {
             unreadCount++
           }

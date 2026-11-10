@@ -13,6 +13,8 @@ export class WindowManager {
   private chatBoundsFilePath: string
   private hasCustomChatPosition = false
   private chatWindowReady = false
+  private chatVisible = false
+  private chatHasShownOnce = false
 
   constructor() {
     this.stateFilePath = path.join(app.getPath('userData'), 'pet_position.json')
@@ -65,6 +67,13 @@ export class WindowManager {
 
   public getChatWindow() {
     return this.chatWindow
+  }
+
+  public isChatWindowVisible(): boolean {
+    if (!this.chatWindow || this.chatWindow.isDestroyed()) {
+      return false
+    }
+    return this.chatVisible
   }
 
   public getAvatarState(): AvatarState {
@@ -241,9 +250,30 @@ export class WindowManager {
     this.chatWindow.on('closed', () => {
       this.chatWindow = null
       this.chatWindowReady = false
+      this.chatVisible = false
+      this.chatHasShownOnce = false
     })
 
     return this.chatWindow
+  }
+
+  private showChatWindowSeamless() {
+    if (!this.chatWindow || this.chatWindow.isDestroyed()) return
+    if (!this.hasCustomChatPosition) {
+      this.positionChatNearPet()
+    }
+    this.chatVisible = true
+    this.chatWindow.setSkipTaskbar(false)
+    this.chatWindow.setIgnoreMouseEvents(false)
+    this.chatWindow.setOpacity(1)
+    if (!this.chatHasShownOnce || !this.chatWindow.isVisible()) {
+      this.chatHasShownOnce = true
+      this.chatWindow.show()
+    }
+    this.chatWindow.focus()
+    if (this.currentAvatarState === 'idle') {
+      this.setAvatarState('listening')
+    }
   }
 
   public toggleChatWindow() {
@@ -253,28 +283,13 @@ export class WindowManager {
 
     if (!this.chatWindow) return
 
-    if (this.chatWindow.isVisible()) {
-      this.chatWindow.hide()
-      if (this.currentAvatarState === 'listening') {
-        this.setAvatarState('idle')
-      }
+    if (this.chatVisible) {
+      this.hideChatWindow()
     } else {
-      const revealWindow = () => {
-        if (!this.chatWindow || this.chatWindow.isDestroyed()) return
-        if (!this.hasCustomChatPosition) {
-          this.positionChatNearPet()
-        }
-        this.chatWindow.show()
-        this.chatWindow.focus()
-        if (this.currentAvatarState === 'idle') {
-          this.setAvatarState('listening')
-        }
-      }
-
       if (this.chatWindowReady || !this.chatWindow.webContents.isLoading()) {
-        revealWindow()
+        this.showChatWindowSeamless()
       } else {
-        this.chatWindow.once('ready-to-show', revealWindow)
+        this.chatWindow.once('ready-to-show', () => this.showChatWindowSeamless())
       }
     }
   }
@@ -328,8 +343,14 @@ export class WindowManager {
   }
 
   public hideChatWindow() {
-    if (this.chatWindow && !this.chatWindow.isDestroyed() && this.chatWindow.isVisible()) {
-      this.chatWindow.hide()
+    if (this.chatWindow && !this.chatWindow.isDestroyed() && this.chatVisible) {
+      this.chatVisible = false
+      // Keep DirectComposition swapchain alive on Windows DWM by using 0 opacity + click-through
+      // instead of SW_HIDE (which evicts the GPU surface and causes a flash on the next show).
+      this.chatWindow.setOpacity(0)
+      this.chatWindow.setIgnoreMouseEvents(true, { forward: true })
+      this.chatWindow.setSkipTaskbar(true)
+      this.chatWindow.blur()
       if (this.currentAvatarState === 'listening') {
         this.setAvatarState('idle')
       }
