@@ -117,24 +117,6 @@ const chatApi: ChatApi = {
   getSecretaryState: () => {
     return ipcRenderer.invoke('secretary:get-state')
   },
-  updateWorkflowConfig: (id, patch) => {
-    return ipcRenderer.invoke('secretary:update-workflow', { id, patch })
-  },
-  addSecretaryReminder: (title, delayMinutes, source) => {
-    return ipcRenderer.invoke('secretary:add-reminder', { title, delayMinutes, source })
-  },
-  removeSecretaryReminder: (id) => {
-    return ipcRenderer.invoke('secretary:remove-reminder', id)
-  },
-  addSecretaryTodo: (text) => {
-    return ipcRenderer.invoke('secretary:add-todo', text)
-  },
-  toggleSecretaryTodo: (id) => {
-    return ipcRenderer.invoke('secretary:toggle-todo', id)
-  },
-  removeSecretaryTodo: (id) => {
-    return ipcRenderer.invoke('secretary:remove-todo', id)
-  },
   onSecretaryStateUpdated: (callback) => {
     const subscription = (_event: any, state: any) => callback(state)
     ipcRenderer.on('secretary:state-updated', subscription)
