@@ -5,53 +5,9 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { pathToFileURL } from 'url'
-import {
-  MusePlugin,
-  PendingSecretaryAction,
-  SecretaryReminder,
-  SecretaryState,
-  SecretaryTodoItem,
-  WorkflowMacroConfig,
-  WorkflowMacroId,
-} from '../types'
+import { MusePlugin, PendingSecretaryAction, SecretaryState } from '../types'
 
 const SECRETARY_PARTITION = 'persist:secretary_browser'
-
-const DEFAULT_WORKFLOWS: Record<WorkflowMacroId, WorkflowMacroConfig> = {
-  work: {
-    id: 'work',
-    name: '🚀 工作模式',
-    description: '一键打开核心办公网页、启动常用软件并汇报今日待办与未读邮件',
-    urls: [
-      'https://mail.google.com/mail/u/0/#search/is%3Aunread',
-      'https://github.com',
-    ],
-    apps: ['code'],
-  },
-  focus: {
-    id: 'focus',
-    name: '🎯 专注番茄钟',
-    description: '开启深度专注倒计时，到点由桌宠 Luna 主动冒泡提醒休息',
-    urls: [],
-    apps: [],
-    defaultMinutes: 25,
-  },
-  meeting: {
-    id: 'meeting',
-    name: '🎙️ 会议准备模式',
-    description: '打开日历/会议页、设定 45 分钟散会纪要提醒并提供静音快捷控制',
-    urls: ['https://calendar.google.com'],
-    apps: [],
-    defaultMinutes: 45,
-  },
-  off: {
-    id: 'off',
-    name: '🌙 收工复盘模式',
-    description: '汇总今日已完成与未完成待办、检查高负载后台进程并提供一键锁屏授权',
-    urls: [],
-    apps: [],
-  },
-}
 
 export interface GmailEmailItem {
   sender: string
@@ -91,20 +47,14 @@ export class LocalSecretary {
   private pendingActions = new Map<string, PendingSecretaryAction>()
   private onActionUpdatedCallbacks: Array<(action: PendingSecretaryAction) => void> = []
   private onStateUpdatedCallbacks: Array<(state: SecretaryState) => void> = []
-  private onReminderFiredCallbacks: Array<(reminder: SecretaryReminder) => void> = []
   private stateFilePath = ''
   private state: SecretaryState = {
-    reminders: [],
-    todos: [],
-    workflows: JSON.parse(JSON.stringify(DEFAULT_WORKFLOWS)),
     plugins: [],
   }
-  private schedulerTimer: NodeJS.Timeout | null = null
 
   public init() {
     this.stateFilePath = path.join(app.getPath('userData'), 'secretary_state.json')
     this.loadState()
-    this.startScheduler()
   }
 
   private loadState() {
@@ -112,14 +62,7 @@ export class LocalSecretary {
       if (this.stateFilePath && fs.existsSync(this.stateFilePath)) {
         const raw = JSON.parse(fs.readFileSync(this.stateFilePath, 'utf-8'))
         this.state = {
-          reminders: Array.isArray(raw.reminders) ? raw.reminders : [],
-          todos: Array.isArray(raw.todos) ? raw.todos : [],
-          workflows: {
-            ...JSON.parse(JSON.stringify(DEFAULT_WORKFLOWS)),
-            ...(raw.workflows || {}),
-          },
           plugins: Array.isArray(raw.plugins) ? raw.plugins : [],
-          lastBriefDate: raw.lastBriefDate,
         }
       }
     } catch (e) {
@@ -147,61 +90,12 @@ export class LocalSecretary {
     this.onStateUpdatedCallbacks.push(cb)
   }
 
-  public onReminderFired(cb: (reminder: SecretaryReminder) => void) {
-    this.onReminderFiredCallbacks.push(cb)
-  }
-
   private emitStateUpdated() {
     for (const cb of this.onStateUpdatedCallbacks) {
       try {
         cb(this.state)
       } catch (e) {
         console.error('LocalSecretary onStateUpdated error:', e)
-      }
-    }
-  }
-
-  private startScheduler() {
-    if (this.schedulerTimer) clearInterval(this.schedulerTimer)
-    this.schedulerTimer = setInterval(() => {
-      const now = Date.now()
-      let changed = false
-      for (const rem of this.state.reminders) {
-        if (!rem.fired && now >= rem.dueAt) {
-          rem.fired = true
-          changed = true
-          this.fireReminderNotification(rem)
-        }
-      }
-      if (changed) {
-        this.saveState()
-      }
-    }, 3000)
-  }
-
-  private fireReminderNotification(rem: SecretaryReminder) {
-    try {
-      if (Notification.isSupported()) {
-        const n = new Notification({
-          title:
-            rem.source === 'focus'
-              ? '🎯 专注番茄钟完成！'
-              : rem.source === 'meeting'
-              ? '🎙️ 会议时段提醒'
-              : '⏰ Luna 小秘书日程提醒',
-          body: rem.title,
-        })
-        n.show()
-      }
-    } catch (e) {
-      console.warn('Notification error:', e)
-    }
-
-    for (const cb of this.onReminderFiredCallbacks) {
-      try {
-        cb(rem)
-      } catch (e) {
-        console.error('onReminderFired callback error:', e)
       }
     }
   }
@@ -765,336 +659,12 @@ export class LocalSecretary {
   }
 
   public destroy() {
-    if (this.schedulerTimer) {
-      clearInterval(this.schedulerTimer)
-      this.schedulerTimer = null
-    }
     if (this.browserWindow && !this.browserWindow.isDestroyed()) {
       this.browserWindow.destroy()
       this.browserWindow = null
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // 5. Proactive Reminders, Todos, Briefing & Workspace Workflows
-  // ---------------------------------------------------------------------------
-
-  public addReminder(
-    title: string,
-    delayMinutes: number,
-    source: SecretaryReminder['source'] = 'reminder'
-  ): SecretaryReminder {
-    const cleanTitle = title.trim() || '未命名日程提醒'
-    const dueAt = Date.now() + Math.max(0.1, delayMinutes) * 60 * 1000
-    const rem: SecretaryReminder = {
-      id: `rem-${crypto.randomBytes(4).toString('hex')}`,
-      title: cleanTitle,
-      dueAt,
-      createdAt: Date.now(),
-      fired: false,
-      source,
-    }
-    this.state.reminders = [
-      ...this.state.reminders.filter((r) => !r.fired || Date.now() - r.dueAt < 12 * 3600 * 1000),
-      rem,
-    ].sort((a, b) => a.dueAt - b.dueAt)
-    this.saveState()
-    return rem
-  }
-
-  public removeReminder(id: string): SecretaryState {
-    this.state.reminders = this.state.reminders.filter((r) => r.id !== id)
-    this.saveState()
-    return this.state
-  }
-
-  public addTodo(text: string): SecretaryTodoItem {
-    const item: SecretaryTodoItem = {
-      id: `todo-${crypto.randomBytes(4).toString('hex')}`,
-      text: text.trim(),
-      done: false,
-      createdAt: Date.now(),
-    }
-    this.state.todos.push(item)
-    this.saveState()
-    return item
-  }
-
-  public toggleTodo(id: string): SecretaryState {
-    this.state.todos = this.state.todos.map((t) =>
-      t.id === id
-        ? { ...t, done: !t.done, completedAt: !t.done ? Date.now() : undefined }
-        : t
-    )
-    this.saveState()
-    return this.state
-  }
-
-  public removeTodo(id: string): SecretaryState {
-    this.state.todos = this.state.todos.filter((t) => t.id !== id)
-    this.saveState()
-    return this.state
-  }
-
-  public updateWorkflowConfig(
-    id: WorkflowMacroId,
-    patch: Partial<WorkflowMacroConfig>
-  ): SecretaryState {
-    const current = this.state.workflows[id] || DEFAULT_WORKFLOWS[id]
-    this.state.workflows[id] = {
-      ...current,
-      ...patch,
-      id,
-    }
-    this.saveState()
-    return this.state
-  }
-
-  /**
-   * Parses natural language time expressions like:
-   * - "25分钟后提醒我复盘代码" / "/remind 25m 复盘代码" / "半小时后提醒我喝水"
-   * - "15:30提醒我参加周会" / "下午3点半提醒我开会"
-   */
-  public parseReminderFromText(rawText: string): { delayMinutes: number; title: string } | null {
-    const text = rawText.trim()
-
-    // Slash command: /remind 25m 复盘代码 or /remind 10 喝水
-    if (/^\/remind\b/i.test(text)) {
-      const rest = text.replace(/^\/remind\s*/i, '').trim()
-      const m = rest.match(/^(\d+(?:\.\d+)?)\s*(s|sec|秒|m|min|分钟?|h|hr|小时)?\s+(.+)$/i)
-      if (m) {
-        const val = parseFloat(m[1])
-        const unit = (m[2] || 'm').toLowerCase()
-        const delayMinutes =
-          unit.startsWith('h') || unit.includes('小时')
-            ? val * 60
-            : unit.startsWith('s') || unit.includes('秒')
-            ? val / 60
-            : val
-        return { delayMinutes, title: m[3].trim() }
-      }
-    }
-
-    // Relative Chinese time: "25分钟后提醒我..." / "半小时后叫我..." / "10秒后提醒我..."
-    const relMatch = text.match(
-      /(?:(\d+(?:\.\d+)?)\s*(秒钟?|分钟?|小时|个小时)|半小时|一刻钟)(?:后|之后|以后)?\s*(?:提醒我|叫我|通知我|记得|提醒)?\s*(.+)/i
-    )
-    if (relMatch) {
-      let delayMinutes = 25
-      if (text.includes('半小时')) {
-        delayMinutes = 30
-      } else if (text.includes('一刻钟')) {
-        delayMinutes = 15
-      } else if (relMatch[1]) {
-        const num = parseFloat(relMatch[1])
-        const unit = relMatch[2] || '分钟'
-        if (unit.includes('小时')) delayMinutes = num * 60
-        else if (unit.includes('秒')) delayMinutes = Math.max(0.1, num / 60)
-        else delayMinutes = num
-      }
-      const title = (relMatch[3] || '定时提醒事项').replace(/[。！!]+$/, '').trim()
-      return { delayMinutes, title: title || '定时提醒事项' }
-    }
-
-    // Absolute clock time today: "下午3点30分提醒我开会" / "15:30提醒我开会"
-    const clockMatch = text.match(
-      /(?:今天)?(上午|下午|晚上)?\s*(\d{1,2})\s*(?:[:：点时])\s*(\d{1,2}|半)?\s*分?\s*(?:提醒我|叫我|通知我)\s*(.+)/i
-    )
-    if (clockMatch) {
-      const period = clockMatch[1] || ''
-      let hour = parseInt(clockMatch[2], 10)
-      const minRaw = clockMatch[3]
-      const minute = minRaw === '半' ? 30 : minRaw ? parseInt(minRaw, 10) : 0
-      if ((period === '下午' || period === '晚上') && hour < 12) {
-        hour += 12
-      }
-      const now = new Date()
-      const target = new Date()
-      target.setHours(hour, minute, 0, 0)
-      if (target.getTime() <= now.getTime()) {
-        target.setDate(target.getDate() + 1)
-      }
-      const delayMinutes = Math.max(1, (target.getTime() - now.getTime()) / 60000)
-      const title = clockMatch[4].replace(/[。！!]+$/, '').trim()
-      return { delayMinutes, title: title || '日程提醒' }
-    }
-
-    return null
-  }
-
-  public getScheduleSummaryText(): string {
-    const activeReminders = this.state.reminders.filter((r) => !r.fired)
-    const pendingTodos = this.state.todos.filter((t) => !t.done)
-    const doneTodos = this.state.todos.filter((t) => t.done)
-
-    const remLines =
-      activeReminders.length > 0
-        ? activeReminders
-            .map((r, i) => {
-              const minsLeft = Math.max(1, Math.round((r.dueAt - Date.now()) / 60000))
-              const timeStr = new Date(r.dueAt).toLocaleTimeString('zh-CN', {
-                hour: '2-digit',
-                minute: '2-digit',
-              })
-              return `${i + 1}. [${timeStr} · 约 ${minsLeft} 分钟后] ${r.title}`
-            })
-            .join('\n')
-        : '暂无倒计时提醒'
-
-    const todoLines =
-      pendingTodos.length > 0
-        ? pendingTodos.map((t, i) => `${i + 1}. [待完成] ${t.text}`).join('\n')
-        : '暂无未完成待办'
-
-    return [
-      `⏰ 当前倒计时提醒 (${activeReminders.length} 项):\n${remLines}`,
-      `📋 今日待办事项 (未完成 ${pendingTodos.length} 项 / 已完成 ${doneTodos.length} 项):\n${todoLines}`,
-    ].join('\n\n')
-  }
-
-  /**
-   * Builds a comprehensive Daily Briefing (Todos + Reminders + Gmail Unread + System Health)
-   */
-  public async generateDailyBriefing(markDailyDate = true): Promise<string> {
-    if (markDailyDate) {
-      const todayStr = new Date().toISOString().slice(0, 10)
-      this.state.lastBriefDate = todayStr
-      this.saveState()
-    }
-
-    const scheduleText = this.getScheduleSummaryText()
-    const sysText = await this.getSystemSnapshot()
-    let gmailSummary = ''
-    try {
-      const gmailRes = await this.openAndInspectGmail('未读', false)
-      gmailSummary = gmailRes.summaryText
-    } catch {
-      gmailSummary = 'Gmail 未读检查暂不可用'
-    }
-
-    return [
-      `📅 日期: ${new Date().toLocaleString('zh-CN')}`,
-      scheduleText,
-      `📧 Gmail 未读邮件巡检:\n${gmailSummary}`,
-      `🖥️ 电脑系统状态:\n${sysText}`,
-    ].join('\n\n')
-  }
-
-  public shouldRunDailyFirstBrief(): boolean {
-    const todayStr = new Date().toISOString().slice(0, 10)
-    return this.state.lastBriefDate !== todayStr
-  }
-
-  public markDailyFirstBriefDone() {
-    this.state.lastBriefDate = new Date().toISOString().slice(0, 10)
-    this.saveState()
-  }
-
-  /**
-   * Executes one of the 4 Workspace Quick Macros: work | focus | meeting | off
-   */
-  public async executeWorkflowMacro(
-    id: WorkflowMacroId,
-    argText = ''
-  ): Promise<{
-    summary: string
-    pendingAction?: PendingSecretaryAction
-  }> {
-    const wf = this.state.workflows[id] || DEFAULT_WORKFLOWS[id]
-
-    if (id === 'work') {
-      const openedUrls: string[] = []
-      for (const u of wf.urls) {
-        if (u.trim()) {
-          await shell.openExternal(u.trim())
-          openedUrls.push(u.trim())
-        }
-      }
-      const launchedApps: string[] = []
-      for (const appCmd of wf.apps) {
-        const clean = appCmd.trim()
-        if (!clean) continue
-        try {
-          execFile('cmd.exe', ['/c', 'start', '""', clean], { timeout: 5000 }, () => {})
-          launchedApps.push(clean)
-        } catch {
-          // ignore individual app launch failure
-        }
-      }
-
-      const brief = await this.generateDailyBriefing(true)
-      return {
-        summary: [
-          `已启动【${wf.name}】：`,
-          openedUrls.length > 0 ? `- 已打开工作网页: ${openedUrls.join(', ')}` : '',
-          launchedApps.length > 0 ? `- 已唤醒本地应用: ${launchedApps.join(', ')}` : '',
-          `\n--- 今日工作简报数据 ---\n${brief}`,
-        ]
-          .filter(Boolean)
-          .join('\n'),
-      }
-    }
-
-    if (id === 'focus') {
-      const m = argText.match(/(\d+)/)
-      const minutes = m ? Math.max(1, parseInt(m[1], 10)) : wf.defaultMinutes || 25
-      const topic =
-        argText.replace(/\d+\s*(m|min|分钟)?/gi, '').trim() || '专注工作时段完成，起来活动喝口水吧！'
-      const rem = this.addReminder(`🎯 专注完成 (${minutes}分钟)：${topic}`, minutes, 'focus')
-      const timeStr = new Date(rem.dueAt).toLocaleTimeString('zh-CN', {
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-      return {
-        summary: `已开启 **${minutes} 分钟深度专注番茄钟**（将于 ${timeStr} 到点提醒：${topic}）。\n当前待办列表：\n${this.getScheduleSummaryText()}`,
-      }
-    }
-
-    if (id === 'meeting') {
-      const openedUrls: string[] = []
-      for (const u of wf.urls) {
-        if (u.trim()) {
-          await shell.openExternal(u.trim())
-          openedUrls.push(u.trim())
-        }
-      }
-      const minutes = wf.defaultMinutes || 45
-      const rem = this.addReminder('🎙️ 会议结束提醒：整理会议纪要与跟进事项', minutes, 'meeting')
-      const timeStr = new Date(rem.dueAt).toLocaleTimeString('zh-CN', {
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-      const muteAction = this.createPendingAction(
-        'powershell',
-        '会议模式：一键切换系统静音状态',
-        `(New-Object -ComObject WScript.Shell).SendKeys([char]173); Write-Output "已切换系统静音状态"`,
-        '通过发送系统音量静音键 (VK_VOLUME_MUTE) 避免会议中桌面通知打扰'
-      )
-      return {
-        summary: `已启动【${wf.name}】：\n- 已打开日历/会议页: ${openedUrls.join(', ') || '无'}\n- 已设定 ${minutes} 分钟散会纪要提醒（${timeStr} 到点）\n- 如需将电脑静音，请点击下方授权卡片：`,
-        pendingAction: muteAction,
-      }
-    }
-
-    // id === 'off' (收工复盘模式)
-    const scheduleText = this.getScheduleSummaryText()
-    const sysText = await this.getSystemSnapshot()
-    const lockAction = this.createPendingAction(
-      'powershell',
-      '收工锁屏：一键锁定 Windows 桌面',
-      `rundll32.exe user32.dll,LockWorkStation; Write-Output "已锁定工作站"`,
-      '锁定当前 Windows 会话屏幕，保护下班期间隐私安全'
-    )
-    return {
-      summary: [
-        `已启动【${wf.name}】：`,
-        scheduleText,
-        `🖥️ 当前后台资源状态:\n${sysText}`,
-        `如需离开工位锁屏，可点击下方授权卡片一键锁屏：`,
-      ].join('\n\n'),
-      pendingAction: lockAction,
-    }
-  }
 
   // ---------------------------------------------------------------------------
   // 6. Self-Modifying UI & Live Plugin Engine

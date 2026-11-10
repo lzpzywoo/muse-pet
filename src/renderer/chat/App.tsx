@@ -270,9 +270,13 @@ export default function ChatApp() {
       if (plg.chatJs) {
         const sdk = {
           sendCommand: (cmd: string) => handleSend(cmd),
-          addReminder: (title: string, mins: number) =>
-            window.chatApi?.addSecretaryReminder(title, mins, 'reminder'),
-          addTodo: (text: string) => window.chatApi?.addSecretaryTodo(text),
+          addReminder: (title: string, mins: number) => {
+            // Plugin-local timer reminder (no secretary IPC needed)
+            setTimeout(() => {
+              sdk.notify(`⏰ ${title}`)
+            }, Math.max(100, mins * 60 * 1000))
+          },
+          addTodo: (_text: string) => { /* noop – todos are plugin-managed */ },
           notify: (msg: string) => {
             setMessages((prev) => [
               ...prev,
