@@ -4,7 +4,6 @@ import type {
   UserProfile,
   ProxyConfig,
   NetworkTestResult,
-  PetDisplayMode,
   SecretaryState,
   WorkflowMacroId,
 } from '../../types'
@@ -1069,76 +1068,6 @@ export default function ChatApp() {
                 >
                   重置默认尺寸 (640×560)
                 </button>
-              </div>
-            </div>
-
-            {/* Pet Avatar Full-Body Preview & Display Mode Switcher */}
-            <div className="space-y-2 pb-2 border-b border-white/10 font-terminal">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-200 font-medium">桌宠形象展示模式 (Avatar Framing)</span>
-                <span className="text-[10.5px] text-sky-300">
-                  {secretaryState?.petDisplayMode === 'full'
-                    ? '常驻全身立绘 (1600×1600)'
-                    : secretaryState?.petDisplayMode === 'video'
-                    ? '常驻半身动态视频 (720×720)'
-                    : '智能联动 (待机全身 · 对话动态)'}
-                </span>
-              </div>
-              <div className="flex items-center gap-3">
-                {authProfile.avatarUrl && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPreviewMedia({
-                        type: 'image',
-                        url: authProfile.avatarUrl!,
-                        title: `${agentDisplayName} · 完整全身立绘 (1600×1600)`,
-                      })
-                    }
-                    title="点击放大查看完整全身立绘"
-                    className="relative w-14 h-20 rounded-xl bg-white/95 border border-sky-400/40 overflow-hidden flex-shrink-0 flex items-center justify-center shadow-md group"
-                  >
-                    <img
-                      src={authProfile.avatarUrl}
-                      alt={agentDisplayName}
-                      className="w-full h-full object-contain p-0.5 group-hover:scale-105 transition-transform"
-                      draggable={false}
-                    />
-                  </button>
-                )}
-                <div className="flex-1 space-y-1.5">
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {(
-                      [
-                        { id: 'smart', label: '✨ 智能全身 (推荐)' },
-                        { id: 'full', label: '🧍 常驻全身立绘' },
-                        { id: 'video', label: '🎬 半身动态视频' },
-                      ] as Array<{ id: PetDisplayMode; label: string }>
-                    ).map((m) => {
-                      const curMode = secretaryState?.petDisplayMode || 'smart'
-                      return (
-                        <button
-                          key={m.id}
-                          type="button"
-                          onClick={async () => {
-                            const st = await window.chatApi?.setPetDisplayMode(m.id)
-                            if (st) setSecretaryState(st)
-                          }}
-                          className={`py-1.5 px-2 rounded-lg border text-center text-[11px] transition-all ${
-                            curMode === m.id
-                              ? 'bg-sky-500/25 border-sky-400/60 text-sky-100 font-medium shadow-inner'
-                              : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
-                          }`}
-                        >
-                          {m.label}
-                        </button>
-                      )
-                    })}
-                  </div>
-                  <div className="text-[10.5px] text-slate-400 leading-snug">
-                    muse.ai 的循环视频为半身景别(720×720)，立绘为从头到脚完整全身像(1600×1600)。智能模式待机展示全身，思考/说话时自动切换动态视频。
-                  </div>
-                </div>
               </div>
             </div>
 

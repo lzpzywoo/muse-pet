@@ -8,7 +8,6 @@ import { pathToFileURL } from 'url'
 import {
   MusePlugin,
   PendingSecretaryAction,
-  PetDisplayMode,
   SecretaryReminder,
   SecretaryState,
   SecretaryTodoItem,
@@ -99,7 +98,6 @@ export class LocalSecretary {
     todos: [],
     workflows: JSON.parse(JSON.stringify(DEFAULT_WORKFLOWS)),
     plugins: [],
-    petDisplayMode: 'smart',
   }
   private schedulerTimer: NodeJS.Timeout | null = null
 
@@ -121,12 +119,6 @@ export class LocalSecretary {
             ...(raw.workflows || {}),
           },
           plugins: Array.isArray(raw.plugins) ? raw.plugins : [],
-          petDisplayMode:
-            raw.petDisplayMode === 'full' ||
-            raw.petDisplayMode === 'video' ||
-            raw.petDisplayMode === 'smart'
-              ? raw.petDisplayMode
-              : 'smart',
           lastBriefDate: raw.lastBriefDate,
         }
       }
@@ -1181,16 +1173,6 @@ export class LocalSecretary {
 
   public resetAllPlugins(): SecretaryState {
     this.state.plugins = []
-    this.saveState()
-    return this.state
-  }
-
-  public getPetDisplayMode(): PetDisplayMode {
-    return this.state.petDisplayMode || 'smart'
-  }
-
-  public setPetDisplayMode(mode: PetDisplayMode): SecretaryState {
-    this.state.petDisplayMode = mode
     this.saveState()
     return this.state
   }

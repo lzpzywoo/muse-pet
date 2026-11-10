@@ -79,7 +79,6 @@ export function registerIpcHandlers(
     const petWin = windowManager.getPetWindow()
     if (petWin && !petWin.isDestroyed()) {
       petWin.webContents.send('plugin:list-updated', state.plugins || [])
-      petWin.webContents.send('pet:display-mode-updated', state.petDisplayMode || 'smart')
     }
   })
 
@@ -872,21 +871,6 @@ export function registerIpcHandlers(
 
   ipcMain.handle('secretary:reset-plugins', () => {
     return localSecretary.resetAllPlugins()
-  })
-
-  ipcMain.handle('pet:get-display-mode', () => {
-    return localSecretary.getPetDisplayMode()
-  })
-
-  ipcMain.handle('pet:set-display-mode', (_event, mode: 'smart' | 'full' | 'video') => {
-    const validMode = mode === 'full' || mode === 'video' ? mode : 'smart'
-    localSecretary.setPetDisplayMode(validMode)
-    return validMode
-  })
-
-  ipcMain.handle('secretary:set-pet-display-mode', (_event, mode: 'smart' | 'full' | 'video') => {
-    const validMode = mode === 'full' || mode === 'video' ? mode : 'smart'
-    return localSecretary.setPetDisplayMode(validMode)
   })
 
   // Auth events

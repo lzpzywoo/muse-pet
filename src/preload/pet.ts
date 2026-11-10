@@ -57,19 +57,6 @@ const petApi: PetApi = {
       ipcRenderer.removeListener('plugin:list-updated', subscription)
     }
   },
-  getDisplayMode: () => {
-    return ipcRenderer.invoke('pet:get-display-mode')
-  },
-  setDisplayMode: (mode) => {
-    return ipcRenderer.invoke('pet:set-display-mode', mode)
-  },
-  onDisplayModeUpdated: (callback) => {
-    const subscription = (_event: any, mode: any) => callback(mode)
-    ipcRenderer.on('pet:display-mode-updated', subscription)
-    return () => {
-      ipcRenderer.removeListener('pet:display-mode-updated', subscription)
-    }
-  },
 }
 
 contextBridge.exposeInMainWorld('petApi', petApi)
