@@ -159,7 +159,6 @@ export default function ChatApp() {
     width: 640,
     height: 560,
   })
-  const [isResizing, setIsResizing] = useState(false)
   const preZoomSizeRef = useRef<{ width: number; height: number } | null>(null)
   const [previewMedia, setPreviewMedia] = useState<{
     type: 'image' | 'video'
@@ -747,7 +746,6 @@ export default function ChatApp() {
       width: winBounds.width,
       height: winBounds.height,
     }
-    setIsResizing(true)
     setIsCompact(false)
 
     const MIN_W = 460
@@ -793,7 +791,6 @@ export default function ChatApp() {
     }
 
     const onMouseUp = () => {
-      setIsResizing(false)
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
     }
@@ -874,9 +871,7 @@ export default function ChatApp() {
         style={{ '--terminal-alpha': appearance.opacity / 100 } as React.CSSProperties}
         className={`liquid-glass-terminal liquid-glass-shell w-full ${
           isCompact ? 'h-[430px]' : 'h-full'
-        } flex flex-col text-slate-100 overflow-hidden ${
-          isResizing ? '' : 'transition-all duration-300'
-        }`}
+        } flex flex-col text-slate-100 overflow-hidden`}
       >
         {/* macOS Terminal Titlebar (Draggable) */}
         <div

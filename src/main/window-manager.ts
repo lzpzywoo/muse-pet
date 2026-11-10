@@ -12,6 +12,7 @@ export class WindowManager {
   private stateFilePath: string
   private chatBoundsFilePath: string
   private hasCustomChatPosition = false
+  private chatWindowReady = false
 
   constructor() {
     this.stateFilePath = path.join(app.getPath('userData'), 'pet_position.json')
@@ -159,7 +160,28 @@ export class WindowManager {
     const initW = Math.min(screenW - 24, Math.max(460, savedBounds?.width || 640))
     const initH = Math.min(screenH - 24, Math.max(380, savedBounds?.height || 560))
 
+    const hasValidSavedPos =
+      savedBounds &&
+      typeof savedBounds.x === 'number' &&
+      typeof savedBounds.y === 'number' &&
+      savedBounds.x >= -100 &&
+      savedBounds.x < screenW - 80 &&
+      savedBounds.y >= 0 &&
+      savedBounds.y < screenH - 80
+
+    const initX = hasValidSavedPos
+      ? savedBounds!.x!
+      : Math.max(16, Math.round((screenW - initW) / 2))
+    const initY = hasValidSavedPos
+      ? savedBounds!.y!
+      : Math.max(24, Math.min(screenH - initH - 24, Math.round(screenH * 0.16)))
+
+    this.hasCustomChatPosition = Boolean(hasValidSavedPos)
+    this.chatWindowReady = false
+
     this.chatWindow = new BrowserWindow({
+      x: initX,
+      y: initY,
       width: initW,
       height: initH,
       minWidth: 460,
@@ -170,6 +192,8 @@ export class WindowManager {
       frame: false,
       alwaysOnTop: true,
       show: false,
+      paintWhenInitiallyHidden: true,
+      backgroundColor: '#00000000',
       skipTaskbar: false,
       resizable: true,
       hasShadow: false,
@@ -179,21 +203,16 @@ export class WindowManager {
         contextIsolation: true,
         sandbox: true,
         webSecurity: false,
+        backgroundThrottling: false,
       },
     })
 
-    if (
-      savedBounds &&
-      typeof savedBounds.x === 'number' &&
-      typeof savedBounds.y === 'number' &&
-      savedBounds.x >= -100 &&
-      savedBounds.x < screenW - 80 &&
-      savedBounds.y >= 0 &&
-      savedBounds.y < screenH - 80
-    ) {
-      this.chatWindow.setPosition(savedBounds.x, savedBounds.y)
-      this.hasCustomChatPosition = true
-    }
+    this.chatWindow.once('ready-to-show', () => {
+      this.chatWindowReady = true
+    })
+    this.chatWindow.webContents.once('did-finish-load', () => {
+      this.chatWindowReady = true
+    })
 
     const notifyBoundsChanged = () => {
       if (this.chatWindow && !this.chatWindow.isDestroyed()) {
@@ -221,6 +240,7 @@ export class WindowManager {
 
     this.chatWindow.on('closed', () => {
       this.chatWindow = null
+      this.chatWindowReady = false
     })
 
     return this.chatWindow
@@ -239,13 +259,22 @@ export class WindowManager {
         this.setAvatarState('idle')
       }
     } else {
-      if (!this.hasCustomChatPosition) {
-        this.positionChatNearPet()
+      const revealWindow = () => {
+        if (!this.chatWindow || this.chatWindow.isDestroyed()) return
+        if (!this.hasCustomChatPosition) {
+          this.positionChatNearPet()
+        }
+        this.chatWindow.show()
+        this.chatWindow.focus()
+        if (this.currentAvatarState === 'idle') {
+          this.setAvatarState('listening')
+        }
       }
-      this.chatWindow.show()
-      this.chatWindow.focus()
-      if (this.currentAvatarState === 'idle') {
-        this.setAvatarState('listening')
+
+      if (this.chatWindowReady || !this.chatWindow.webContents.isLoading()) {
+        revealWindow()
+      } else {
+        this.chatWindow.once('ready-to-show', revealWindow)
       }
     }
   }
@@ -318,7 +347,10 @@ export class WindowManager {
     const targetX = Math.max(16, Math.round((screenW - chatW) / 2))
     const targetY = Math.max(24, Math.min(screenH - chatH - 24, Math.round(screenH * 0.16)))
 
-    this.chatWindow.setPosition(targetX, targetY)
+    const [curX, curY] = this.chatWindow.getPosition()
+    if (curX !== targetX || curY !== targetY) {
+      this.chatWindow.setPosition(targetX, targetY)
+    }
   }
 
   public openAuthWindow(onSuccess: (cookies: string) => void) {
