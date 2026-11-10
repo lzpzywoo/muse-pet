@@ -59,8 +59,17 @@ parent: muse-pet-goal
 - **多状态视频提取、持久化缓存与实时换装热更新**：`MuseClient` 从隐藏 `museWindow` 排除聊天消息内部后的主舞台 `video[data-hatch-avatar-layer]` 及其 React Fiber 状态中提取用户的专属虚拟形象高清静态图（WebP）与多状态 720p 循环视频（`default`、`working`、`resume`）及智能体名称（如 `Luna`），持久化缓存至 `userData/avatar_cache/` 并记录资产签名 `avatarSignature`。后台轮询与对话结束时自动比对主舞台 `avatarSignature`，一旦检测到用户在 `muse.ai` 更换服装或形象，立即触发强制重新提取并通过 `avatar:assets-updated` 与 `auth:status-changed` 实时热更新桌面宠物与终端头像。
 - **双窗口同步呈现与透明人物抠图**：`PetWindow` 采用隐藏多状态 `<video>` + 30fps `<canvas>` 实时四边界连通域洪水填充（Edge-Connected Flood Fill）与边缘反算去白边（Color Unmixing），将视频中的纯白背景完全抠除为透明（`alpha = 0`）同时完整保留人物眼白与高光细节，以无外框的纯人物立绘悬浮展示；`ChatWindow` 同步使用提取到的静态头像与智能体名称替换标题栏与消息列表图标。
 
-### 4. 代码结构与工程划分
-- `src/main/`：主进程代码（`app.ts`, `window-manager.ts`, `muse-client.ts`, `session-store.ts`, `ipc-handlers.ts`, `tray.ts`）。
+### 4. 本地工具桥与电脑小秘书系统 (Local Secretary Agent Bridge)
+- **前置意图协同與多模态桥接 (`src/main/local-secretary.ts`)**：
+  - **浏览器与 Gmail 邮件助手**：将自然语言或 `/gmail` 指令自动转化为 Gmail 高级搜索语法（如 `is:unread`, `from:...`, `newer_than:7d`），一方面调用 `shell.openExternal` 在系统默认浏览器直接打开筛选页，另一方面通过共享 `persist:secretary_browser` 分区的受控窗口提取邮件列表（或网页正文），自动构造 `[MUSE_LOCAL_CONTEXT]` 注入给 Luna 汇总提炼（并在本地消息同步时自动剥离隐藏上下文标签）。
+  - **桌面视觉感知 (`/screen`)**：使用 Electron `desktopCapturer` 截取当前主屏幕 1080p 画面，一方面在终端内联回显截图，另一方面通过 `DataTransfer` + React `__reactProps.onChange` 注入隐藏 `museWindow` 的 `<input type="file">`，赋予 Luna 原生多模态看屏能力。
+  - **文件、剪贴板与系统状态管家 (`/sys`, `/clip`, `/find`, `/read`)**：提供系统硬件与高占用进程实时快照、剪贴板读写以及桌面/下载/文档目录的快速检索与读取。
+- **终端分级授权控制（只读与打开免审，写操作必审）**：
+  - 只读感知与打开网页/邮件操作免确认直达；
+  - 涉及自定义 PowerShell 执行（`/ps`）、修改文件或结束进程等具有副作用的操作，统一创建 `PendingSecretaryAction` 并在终端消息流中渲染 **终端授权确认卡（Allow / Deny）**（同时支持对任意代码块点击“本地执行”），仅在用户手动批准后才通过 `powershell.exe -NoProfile -NonInteractive` 执行并回显 `stdout/stderr`。
+
+### 5. 代码结构与工程划分
+- `src/main/`：主进程代码（`index.ts`, `window-manager.ts`, `muse-client.ts`, `local-secretary.ts`, `session-store.ts`, `ipc-handlers.ts`, `tray.ts`）。
 - `src/preload/`：安全 Preload 脚本（`pet.ts`, `chat.ts`），通过 `contextBridge.exposeInMainWorld` 暴露受限且类型完备的 API。
 - `src/renderer/`：React 18 + Vite + Tailwind CSS 多页工程（`pet/` 入口与 `chat/` 入口，共享 `components/` 与 `types/`）。
 

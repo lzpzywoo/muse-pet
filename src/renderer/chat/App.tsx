@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react'
-import type { ChatMessage, UserProfile, ProxyConfig, NetworkTestResult } from '../../types'
+import type {
+  ChatMessage,
+  UserProfile,
+  ProxyConfig,
+  NetworkTestResult,
+} from '../../types'
 import {
   Square,
   Sparkles,
@@ -15,17 +20,41 @@ import {
   Globe,
   Loader2,
   CornerDownLeft,
-  Terminal
+  Terminal,
+  ShieldAlert,
+  Play,
+  Camera,
+  Mail,
+  Cpu,
 } from 'lucide-react'
 
 // Lightweight Markdown & Code Block Formatter in Liquid Glass Terminal style
-function MarkdownContent({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
+function MarkdownContent({
+  content,
+  isStreaming,
+  onRunCodeBlock,
+}: {
+  content: string
+  isStreaming?: boolean
+  onRunCodeBlock?: (code: string, lang: string) => void
+}) {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
+  const [runningIndex, setRunningIndex] = useState<number | null>(null)
 
   const handleCopy = (text: string, index: number) => {
     navigator.clipboard.writeText(text)
     setCopiedIndex(index)
     setTimeout(() => setCopiedIndex(null), 2000)
+  }
+
+  const handleRun = async (code: string, lang: string, index: number) => {
+    if (!onRunCodeBlock) return
+    setRunningIndex(index)
+    try {
+      await onRunCodeBlock(code, lang)
+    } finally {
+      setRunningIndex(null)
+    }
   }
 
   const parts = content.split(/(```[\s\S]*?```)/g)
@@ -37,6 +66,7 @@ function MarkdownContent({ content, isStreaming }: { content: string; isStreamin
           const firstLineEnd = part.indexOf('\n')
           const language = firstLineEnd !== -1 ? part.slice(3, firstLineEnd).trim() : ''
           const code = firstLineEnd !== -1 ? part.slice(firstLineEnd + 1, -3) : part.slice(3, -3)
+          const isRunnableShell = /^(powershell|ps1|pwsh|shell|sh|cmd|bat|bash|)$/i.test(language)
 
           return (
             <div
@@ -48,22 +78,39 @@ function MarkdownContent({ content, isStreaming }: { content: string; isStreamin
                   <Code className="w-3.5 h-3.5 text-sky-400" />
                   {language || 'shell'}
                 </span>
-                <button
-                  onClick={() => handleCopy(code, index)}
-                  className="flex items-center gap-1 hover:text-white transition-colors font-terminal text-[11px]"
-                >
-                  {copiedIndex === index ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="text-emerald-400">copied</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5" />
-                      <span>copy</span>
-                    </>
+                <div className="flex items-center gap-2.5">
+                  {isRunnableShell && onRunCodeBlock && (
+                    <button
+                      onClick={() => handleRun(code, language, index)}
+                      disabled={runningIndex === index}
+                      title="批准并在本地 PowerShell 执行此脚本"
+                      className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 hover:bg-emerald-500/35 transition-colors font-terminal text-[10.5px]"
+                    >
+                      {runningIndex === index ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Play className="w-3 h-3 fill-emerald-300" />
+                      )}
+                      <span>本地执行</span>
+                    </button>
                   )}
-                </button>
+                  <button
+                    onClick={() => handleCopy(code, index)}
+                    className="flex items-center gap-1 hover:text-white transition-colors font-terminal text-[11px]"
+                  >
+                    {copiedIndex === index ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span className="text-emerald-400">copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>copy</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
               <pre className="p-3 overflow-x-auto text-sky-100 font-terminal text-xs whitespace-pre-wrap selection:bg-sky-500/30">
                 <code>{code}</code>
@@ -279,12 +326,23 @@ export default function ChatApp() {
       }
     })
 
+    const unsubSecAction = window.chatApi?.onSecretaryActionUpdated((updatedAction) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.pendingAction && m.pendingAction.id === updatedAction.id
+            ? { ...m, pendingAction: updatedAction }
+            : m
+        )
+      )
+    })
+
     return () => {
       unsubChunk?.()
       unsubEnd?.()
       unsubError?.()
       unsubAuth?.()
       unsubSynced?.()
+      unsubSecAction?.()
     }
   }, [])
 
@@ -357,7 +415,7 @@ export default function ChatApp() {
           id: String(Date.now()),
           role: 'assistant',
           content:
-            '支持的终端快捷命令：\n```shell\n/sync     # 从 muse.ai 云端会话同步最新对话历史\n/clear    # 清空当前终端历史 (或直接输入 clear)\n/theme    # 打开外观透明度与网络配置面板 (同 /settings)\n/solid    # 切换为 100% 纯黑不透明终端\n/glass    # 切换为半透明液态玻璃终端\n/login    # 登录或刷新 Meta Muse 会话\n/exit     # 收起终端窗口 (同 Esc / Alt+Space)\n↑ / ↓     # 翻阅历史输入指令\n```',
+            '支持的电脑小秘书与终端快捷命令（也支持直接用自然语言吩咐）：\n```shell\n/gmail <条件>  # 打开 Gmail 按条件筛选并由 Luna 提炼邮件重点 (如: /gmail 未读)\n/screen [问题] # 截取当前电脑桌面发送给 Luna 看图分析\n/web <网址/词> # 打开指定网页或搜索并提取正文总结\n/sys          # 查看当前电脑 CPU、内存与高占用进程实时状态\n/clip         # 读取系统剪贴板文本交由 Luna 分析或翻译\n/find <关键词> # 在桌面/下载/文档目录快速搜索本地文件\n/read <路径>   # 读取本地文件内容交由 Luna 解读\n/ps <命令>     # 创建待授权的本地 PowerShell 执行卡片 (需手动点击批准)\n/sync         # 从 muse.ai 云端同步最新会话与最新服装形象\n/theme        # 打开外观透明度与网络代理配置\n/clear        # 清空当前终端缓冲区\n/exit         # 收起终端窗口 (同 Esc / Alt+Space)\n```',
           timestamp: Date.now(),
         },
       ])
@@ -412,6 +470,62 @@ export default function ChatApp() {
           status: 'error',
         },
       ])
+    }
+  }
+
+  // Approve or Deny pending local secretary action
+  const handleApproveAction = async (actionId: string) => {
+    try {
+      const updated = await window.chatApi?.approveSecretaryAction(actionId)
+      if (updated) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.pendingAction && m.pendingAction.id === actionId
+              ? { ...m, pendingAction: updated }
+              : m
+          )
+        )
+      }
+    } catch (e: any) {
+      console.error('approveSecretaryAction error:', e)
+    }
+  }
+
+  const handleDenyAction = async (actionId: string) => {
+    try {
+      const updated = await window.chatApi?.denySecretaryAction(actionId)
+      if (updated) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.pendingAction && m.pendingAction.id === actionId
+              ? { ...m, pendingAction: updated }
+              : m
+          )
+        )
+      }
+    } catch (e: any) {
+      console.error('denySecretaryAction error:', e)
+    }
+  }
+
+  const handleRunCodeBlock = async (code: string, _lang: string) => {
+    try {
+      const executed = await window.chatApi?.runSecretaryCommand('终端内联代码块执行', code)
+      if (executed) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: String(Date.now()),
+            role: 'assistant',
+            content: '已在本地执行你批准的 PowerShell 脚本：',
+            pendingAction: executed,
+            timestamp: Date.now(),
+            status: 'done',
+          },
+        ])
+      }
+    } catch (e: any) {
+      console.error('runSecretaryCommand error:', e)
     }
   }
 
@@ -852,6 +966,7 @@ export default function ChatApp() {
                     <MarkdownContent
                       content={msg.content}
                       isStreaming={msg.status === 'streaming'}
+                      onRunCodeBlock={handleRunCodeBlock}
                     />
                   ) : !msg.attachments || msg.attachments.length === 0 ? (
                     <div className="flex items-center gap-2 font-terminal text-xs text-sky-300/80 py-0.5">
@@ -859,6 +974,93 @@ export default function ChatApp() {
                       <span className="animate-terminal-cursor" />
                     </div>
                   ) : null}
+
+                  {/* Terminal Authorization Card for Local Secretary Write / PowerShell Actions */}
+                  {msg.pendingAction && (
+                    <div className="mt-2.5 rounded-xl border border-amber-400/35 bg-slate-950/85 overflow-hidden shadow-lg">
+                      <div className="flex items-center justify-between px-3 py-2 bg-amber-500/15 border-b border-amber-400/25">
+                        <div className="flex items-center gap-2 font-terminal text-xs text-amber-200">
+                          <ShieldAlert className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                          <span className="font-semibold">{msg.pendingAction.title}</span>
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-terminal ${
+                            msg.pendingAction.status === 'pending'
+                              ? 'bg-amber-500/25 text-amber-200 border border-amber-400/40'
+                              : msg.pendingAction.status === 'executed'
+                              ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-400/40'
+                              : msg.pendingAction.status === 'denied'
+                              ? 'bg-slate-700/60 text-slate-300'
+                              : 'bg-rose-500/25 text-rose-200 border border-rose-400/40'
+                          }`}
+                        >
+                          {msg.pendingAction.status === 'pending'
+                            ? '待授权确认'
+                            : msg.pendingAction.status === 'approved'
+                            ? '正在执行...'
+                            : msg.pendingAction.status === 'executed'
+                            ? '已批准执行'
+                            : msg.pendingAction.status === 'denied'
+                            ? '已拒绝'
+                            : '执行异常'}
+                        </span>
+                      </div>
+
+                      <div className="p-3 space-y-2">
+                        <div className="text-[11px] text-slate-300/80 font-terminal">
+                          {msg.pendingAction.description}
+                        </div>
+                        <pre className="p-2.5 rounded-lg bg-black/70 border border-white/10 font-terminal text-xs text-amber-100 overflow-x-auto whitespace-pre-wrap">
+                          <code>{msg.pendingAction.command}</code>
+                        </pre>
+
+                        {msg.pendingAction.status === 'pending' && (
+                          <div className="flex items-center gap-2.5 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => handleApproveAction(msg.pendingAction!.id)}
+                              className="px-3 py-1.5 rounded-lg bg-emerald-500/25 hover:bg-emerald-500/40 border border-emerald-400/50 text-emerald-100 font-terminal text-xs flex items-center gap-1.5 transition-all shadow-sm"
+                            >
+                              <Check className="w-3.5 h-3.5 text-emerald-300" />
+                              <span>批准执行 (Allow)</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDenyAction(msg.pendingAction!.id)}
+                              className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-400/40 text-rose-200 font-terminal text-xs flex items-center gap-1.5 transition-all"
+                            >
+                              <X className="w-3.5 h-3.5 text-rose-300" />
+                              <span>拒绝 (Deny)</span>
+                            </button>
+                          </div>
+                        )}
+
+                        {msg.pendingAction.output && (
+                          <div className="pt-1.5 space-y-1.5">
+                            <div className="flex items-center justify-between text-[10.5px] font-terminal text-slate-400">
+                              <span>终端执行结果 (stdout/stderr):</span>
+                              {msg.pendingAction.status === 'executed' && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleSend(
+                                      `我刚才批准执行了命令 \`${msg.pendingAction!.command}\`，输出如下，请帮我分析结果：\n\`\`\`text\n${msg.pendingAction!.output?.slice(0, 1200)}\n\`\`\``
+                                    )
+                                  }
+                                  className="text-sky-300 hover:text-sky-200 underline"
+                                >
+                                  发送结果给 {agentDisplayName} 分析 →
+                                </button>
+                              )}
+                            </div>
+                            <pre className="p-2.5 rounded-lg bg-slate-900/90 border border-emerald-400/25 font-terminal text-[11.5px] text-emerald-200 max-h-44 overflow-y-auto whitespace-pre-wrap">
+                              {msg.pendingAction.output}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {msg.attachments && msg.attachments.length > 0 && (
                     <div className="flex flex-wrap gap-2.5 pt-1">
@@ -912,8 +1114,9 @@ export default function ChatApp() {
           {messages.length <= 1 && (
             <div className="pt-1 flex flex-wrap gap-2">
               {[
-                '💡 给我一个创意灵感',
-                '💻 写一段查询端口占用并清理的 PowerShell 脚本',
+                '📧 打开 Gmail 筛选未读邮件并总结',
+                '📸 /screen 看看我现在的桌面屏幕',
+                '🖥️ /sys 查看当前电脑运行状态',
                 '/help',
               ].map((prompt, idx) => (
                 <button
@@ -944,9 +1147,39 @@ export default function ChatApp() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="输入问题或 /clear · /proxy · /help，按 Enter 执行..."
+              placeholder="输入问题或吩咐小秘书（如：打开 Gmail 筛选未读邮件 / /screen / /sys / /help）..."
               className="flex-1 bg-transparent text-[14px] text-white placeholder-slate-300/50 font-terminal resize-none outline-none max-h-28 leading-relaxed"
             />
+
+            {/* Quick PC Secretary action triggers */}
+            {!isStreaming && (
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleSend('/gmail 未读')}
+                  title="电脑小秘书：打开 Gmail 筛选未读邮件并总结 (/gmail)"
+                  className="liquid-glass-pill p-1.5 rounded-lg text-slate-300 hover:text-sky-300 transition-colors"
+                >
+                  <Mail className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSend('/screen 帮我看看现在的屏幕内容')}
+                  title="电脑小秘书：截取当前桌面发给 Luna 看图分析 (/screen)"
+                  className="liquid-glass-pill p-1.5 rounded-lg text-slate-300 hover:text-sky-300 transition-colors"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSend('/sys')}
+                  title="电脑小秘书：查看当前电脑硬件与高负载进程状态 (/sys)"
+                  className="liquid-glass-pill p-1.5 rounded-lg text-slate-300 hover:text-sky-300 transition-colors"
+                >
+                  <Cpu className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
 
             {isStreaming ? (
               <button
