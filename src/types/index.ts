@@ -28,6 +28,41 @@ export interface PendingSecretaryAction {
   executedAt?: number
 }
 
+export interface SecretaryReminder {
+  id: string
+  title: string
+  dueAt: number
+  createdAt: number
+  fired: boolean
+  source: 'reminder' | 'focus' | 'meeting'
+}
+
+export interface SecretaryTodoItem {
+  id: string
+  text: string
+  done: boolean
+  createdAt: number
+  completedAt?: number
+}
+
+export type WorkflowMacroId = 'work' | 'focus' | 'meeting' | 'off'
+
+export interface WorkflowMacroConfig {
+  id: WorkflowMacroId
+  name: string
+  description: string
+  urls: string[]
+  apps: string[]
+  defaultMinutes?: number
+}
+
+export interface SecretaryState {
+  reminders: SecretaryReminder[]
+  todos: SecretaryTodoItem[]
+  workflows: Record<WorkflowMacroId, WorkflowMacroConfig>
+  lastBriefDate?: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -106,6 +141,22 @@ export interface ChatApi {
   captureScreenAndAsk: (prompt?: string) => Promise<void>
   openGmailFilter: (filterQuery: string) => Promise<void>
   onSecretaryActionUpdated: (callback: (action: PendingSecretaryAction) => void) => () => void
+  // Proactive Briefing, Schedule & Workspace Workflows APIs
+  getSecretaryState: () => Promise<SecretaryState>
+  updateWorkflowConfig: (
+    id: WorkflowMacroId,
+    patch: Partial<WorkflowMacroConfig>
+  ) => Promise<SecretaryState>
+  addSecretaryReminder: (
+    title: string,
+    delayMinutes: number,
+    source?: SecretaryReminder['source']
+  ) => Promise<SecretaryState>
+  removeSecretaryReminder: (id: string) => Promise<SecretaryState>
+  addSecretaryTodo: (text: string) => Promise<SecretaryState>
+  toggleSecretaryTodo: (id: string) => Promise<SecretaryState>
+  removeSecretaryTodo: (id: string) => Promise<SecretaryState>
+  onSecretaryStateUpdated: (callback: (state: SecretaryState) => void) => () => void
 }
 
 declare global {
