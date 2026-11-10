@@ -19,7 +19,14 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { pathToFileURL } from 'url'
 import { SessionStore } from './session-store'
-import type { AvatarAssets, ChatAttachment, ChatMessage, UserProfile } from '../types'
+import type {
+  AvatarAssets,
+  ChatAttachment,
+  ChatMessage,
+  MuseCloudConsoleTarget,
+  MuseCloudSnapshot,
+  UserProfile,
+} from '../types'
 
 /** Shared partition for the hidden muse.ai browser window */
 export const MUSE_PARTITION = 'persist:meta_muse'
@@ -52,6 +59,8 @@ export class MuseClient {
   private lastCloudDigest: string = ''
   private cloudWatchTimer: NodeJS.Timeout | null = null
   private isSendingChat = false
+  private isFetchingCloudData = false
+  private cachedCloudSnapshot: MuseCloudSnapshot | null = null
 
   constructor(sessionStore: SessionStore) {
     this.sessionStore = sessionStore
@@ -115,7 +124,13 @@ export class MuseClient {
   public startCloudMessageWatcher() {
     if (this.cloudWatchTimer) return
     this.cloudWatchTimer = setInterval(() => {
-      if (this.isSendingChat || !this.sessionStore.getProfile().isLoggedIn) return
+      if (
+        this.isSendingChat ||
+        this.isFetchingCloudData ||
+        !this.sessionStore.getProfile().isLoggedIn
+      ) {
+        return
+      }
       this.fetchCloudMessages(true).catch(() => {})
     }, 4500)
   }
@@ -396,7 +411,9 @@ export class MuseClient {
     if (!this.museWindow || this.museWindow.isDestroyed()) {
       this.museWindow = new BrowserWindow({
         width: 1280,
-        height: 900,
+        height: 860,
+        title: 'Muse Cloud Workspace (muse.ai)',
+        autoHideMenuBar: true,
         show: false,
         skipTaskbar: true,
         webPreferences: {
@@ -410,6 +427,14 @@ export class MuseClient {
       this.museWindow.webContents.setUserAgent(
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
       )
+      // Intercept user close on the console window so it returns to background keep-alive mode
+      this.museWindow.on('close', (e) => {
+        if (this.museWindow && !this.museWindow.isDestroyed() && this.museWindow.isVisible()) {
+          e.preventDefault()
+          this.museWindow.setSkipTaskbar(true)
+          this.museWindow.hide()
+        }
+      })
     }
 
     const win = this.museWindow
@@ -598,6 +623,360 @@ export class MuseClient {
   }
 
   // ---------------------------------------------------------------------------
+  // Muse Cloud Hub Snapshot, Cloud File Reader & Native Console Window
+  // ---------------------------------------------------------------------------
+
+  private getCloudSnapshotCachePath(): string {
+    return path.join(app.getPath('userData'), 'cloud_snapshot.json')
+  }
+
+  private loadCachedCloudSnapshot(): MuseCloudSnapshot | null {
+    if (this.cachedCloudSnapshot) return this.cachedCloudSnapshot
+    try {
+      const p = this.getCloudSnapshotCachePath()
+      if (fs.existsSync(p)) {
+        const parsed = JSON.parse(fs.readFileSync(p, 'utf-8')) as MuseCloudSnapshot
+        this.cachedCloudSnapshot = parsed
+        return parsed
+      }
+    } catch {}
+    return null
+  }
+
+  private saveCachedCloudSnapshot(snapshot: MuseCloudSnapshot): void {
+    this.cachedCloudSnapshot = snapshot
+    try {
+      fs.writeFileSync(this.getCloudSnapshotCachePath(), JSON.stringify(snapshot, null, 2), 'utf-8')
+    } catch {}
+  }
+
+  public async fetchCloudSnapshot(forceRefresh = false): Promise<MuseCloudSnapshot> {
+    const cached = this.loadCachedCloudSnapshot()
+    if (!forceRefresh && cached && Date.now() - cached.updatedAt < 45_000) {
+      return cached
+    }
+
+    const cookies = this.sessionStore.getCookies()
+    const fallbackName = this.sessionStore.getProfile().agentName || 'Luna'
+    const emptySnapshot: MuseCloudSnapshot = cached || {
+      agentName: fallbackName,
+      scheduledTasks: [],
+      activities: [],
+      goals: [],
+      ideas: [],
+      files: [],
+      updatedAt: Date.now(),
+    }
+
+    if (!cookies || this.isSendingChat || this.isFetchingCloudData) {
+      return emptySnapshot
+    }
+
+    this.isFetchingCloudData = true
+    try {
+      const win = await this.ensureMuseWindow(cookies)
+
+      const extracted = await win.webContents.executeJavaScript(`
+        (async function() {
+          const NL = String.fromCharCode(10)
+          const go = async (targetPath, waitMs = 600) => {
+            if (location.pathname + location.search !== targetPath) {
+              history.pushState({}, '', targetPath)
+              window.dispatchEvent(new PopStateEvent('popstate'))
+              await new Promise(r => setTimeout(r, waitMs))
+            }
+          }
+
+          await go('/', 450)
+          const agentNameEl = document.querySelector('[data-pel-click="chat_avatar_click"]')
+          const agentName = (agentNameEl ? agentNameEl.innerText : '').trim() || 'Luna'
+
+          // 1. Scheduled tasks & Activities from right status panel
+          const actBtn = document.querySelector('button[aria-label="动态"], button[aria-label="Activity"]')
+          if (actBtn) actBtn.click()
+          await new Promise(r => setTimeout(r, 250))
+
+          const scheduledTasks = Array.from(
+            document.querySelectorAll('[data-pel-click="status_task_context_menu_open"]')
+          ).map(btn => {
+            const row = btn.parentElement
+            const lines = (row ? row.innerText : '').split(NL).map(s => s.trim()).filter(Boolean)
+            return {
+              title: lines[0] || '',
+              schedule: lines.slice(1).join(' · ') || ''
+            }
+          }).filter(t => t.title)
+
+          const activities = []
+          const dayToggles = Array.from(
+            document.querySelectorAll('[data-pel-click="status_activity_day_toggle_click"]')
+          )
+          for (const toggle of dayToggles) {
+            const dayLabel = (toggle.innerText || '').trim() || '今天'
+            const group = toggle.parentElement
+            if (!group) continue
+            const lines = (group.innerText || '')
+              .split(NL)
+              .map(s => s.trim())
+              .filter(s => s && s !== dayLabel)
+            // Parse triplets: [title, summary, HH:MM]
+            let i = 0
+            while (i < lines.length) {
+              const line = lines[i]
+              const next1 = lines[i + 1] || ''
+              const next2 = lines[i + 2] || ''
+              if (/^\\d{1,2}:\\d{2}$/.test(next2)) {
+                activities.push({
+                  day: dayLabel,
+                  title: line,
+                  summary: next1,
+                  time: next2
+                })
+                i += 3
+              } else if (/^\\d{1,2}:\\d{2}$/.test(next1)) {
+                activities.push({
+                  day: dayLabel,
+                  title: line,
+                  summary: '',
+                  time: next1
+                })
+                i += 2
+              } else {
+                i += 1
+              }
+            }
+          }
+
+          // Check Identity tab for vibe summary
+          let identityVibe = ''
+          const idBtn = document.querySelector('button[aria-label="身份"], button[aria-label="Identity"]')
+          if (idBtn) {
+            idBtn.click()
+            await new Promise(r => setTimeout(r, 250))
+            const bodyLines = (document.body.innerText || '').split(NL).map(s => s.trim()).filter(Boolean)
+            const styleIdx = bodyLines.findIndex(l => l === '风格气质' || l === 'Vibe')
+            if (styleIdx >= 0 && bodyLines[styleIdx + 1]) {
+              identityVibe = bodyLines[styleIdx + 1]
+            }
+            if (actBtn) actBtn.click()
+          }
+
+          // 2. Goals (/goals)
+          await go('/goals', 650)
+          const seenGoals = new Set()
+          const goals = []
+          for (const el of Array.from(document.querySelectorAll('div, button, a'))) {
+            if (el.closest('[data-message-item="true"]')) continue
+            const t = (el.innerText || '').trim()
+            const lines = t.split(NL).map(s => s.trim()).filter(Boolean)
+            if (
+              lines.length === 2 &&
+              lines[0].length >= 3 &&
+              lines[0].length <= 50 &&
+              lines[1].length >= 15 &&
+              lines[1].length <= 240 &&
+              !seenGoals.has(lines[0])
+            ) {
+              seenGoals.add(lines[0])
+              goals.push({ title: lines[0], description: lines[1] })
+            }
+          }
+
+          // 3. Ideas (/ideas)
+          await go('/ideas', 650)
+          const seenIdeas = new Set()
+          const ideas = []
+          for (const el of Array.from(document.querySelectorAll('div, button, a'))) {
+            if (el.closest('[data-message-item="true"]')) continue
+            const t = (el.innerText || '').trim()
+            const lines = t.split(NL).map(s => s.trim()).filter(Boolean)
+            if (
+              lines.length === 2 &&
+              lines[0].length >= 4 &&
+              lines[0].length <= 50 &&
+              lines[1].length >= 18 &&
+              lines[1].length <= 240 &&
+              !seenIdeas.has(lines[0])
+            ) {
+              seenIdeas.add(lines[0])
+              ideas.push({ title: lines[0], description: lines[1] })
+            }
+          }
+
+          // 4. Cloud System Files (/library/files)
+          await go('/library/files', 700)
+          const seenFiles = new Set()
+          const files = []
+          for (const el of Array.from(document.querySelectorAll('div, tr, a, button'))) {
+            if (el.closest('[data-message-item="true"]')) continue
+            const t = (el.innerText || '').trim()
+            const lines = t.split(NL).map(s => s.trim()).filter(Boolean)
+            if (lines.length === 2 && (lines[1] === '文件夹' || lines[1] === 'Folder')) {
+              if (!seenFiles.has(lines[0])) {
+                seenFiles.add(lines[0])
+                files.push({ name: lines[0], type: 'folder' })
+              }
+            } else if (lines.length === 4 && lines[1] === 'Text') {
+              if (!seenFiles.has(lines[0])) {
+                seenFiles.add(lines[0])
+                files.push({
+                  name: lines[0],
+                  type: 'file',
+                  modified: lines[2],
+                  size: lines[3]
+                })
+              }
+            }
+          }
+
+          // Always restore back to '/' so chat composer is ready
+          await go('/', 350)
+
+          return {
+            agentName,
+            identityVibe,
+            scheduledTasks,
+            activities: activities.slice(0, 30),
+            goals,
+            ideas: ideas.slice(0, 18),
+            files
+          }
+        })()
+      `)
+
+      const snapshot: MuseCloudSnapshot = {
+        agentName: extracted?.agentName || fallbackName,
+        identityVibe: extracted?.identityVibe || cached?.identityVibe,
+        scheduledTasks: extracted?.scheduledTasks || [],
+        activities: extracted?.activities || [],
+        goals: extracted?.goals || [],
+        ideas: extracted?.ideas || [],
+        files: extracted?.files || [],
+        updatedAt: Date.now(),
+      }
+      this.saveCachedCloudSnapshot(snapshot)
+      return snapshot
+    } catch (err) {
+      console.error('fetchCloudSnapshot error:', err)
+      return emptySnapshot
+    } finally {
+      this.isFetchingCloudData = false
+    }
+  }
+
+  public async readCloudFile(fileName: string): Promise<{ fileName: string; content: string }> {
+    const cleanName = fileName.replace(/^\/+/, '').trim()
+    const cookies = this.sessionStore.getCookies()
+    if (!cookies || this.isSendingChat) {
+      return {
+        fileName: cleanName,
+        content: '当前正在对话或尚未登录 Meta Muse，请稍后再试。',
+      }
+    }
+
+    this.isFetchingCloudData = true
+    try {
+      const win = await this.ensureMuseWindow(cookies)
+      const content: string = await win.webContents.executeJavaScript(`
+        (async function() {
+          const NL = String.fromCharCode(10)
+          const targetName = ${JSON.stringify(cleanName)}
+          history.pushState({}, '', '/library/files')
+          window.dispatchEvent(new PopStateEvent('popstate'))
+          await new Promise(r => setTimeout(r, 600))
+
+          const els = Array.from(document.querySelectorAll('a, button, div, span')).filter(
+            el => el.innerText && el.innerText.trim() === targetName
+          )
+          if (els.length > 0) {
+            els[els.length - 1].click()
+          } else {
+            history.pushState({}, '', '/library/files?file=' + encodeURIComponent('/' + targetName))
+            window.dispatchEvent(new PopStateEvent('popstate'))
+          }
+          await new Promise(r => setTimeout(r, 900))
+
+          const candidates = Array.from(document.querySelectorAll('div, section, article')).filter(el => {
+            if (el.closest('[data-message-item="true"]')) return false
+            const t = (el.innerText || '').trim()
+            return (
+              (t.startsWith(targetName + NL) || t.includes(NL + targetName + NL + NL)) &&
+              !t.startsWith(targetName + NL + 'Text' + NL) &&
+              t.length > targetName.length + 10 &&
+              t.length < 25000 &&
+              !t.includes('搜索要打开的文件')
+            )
+          })
+          candidates.sort((a, b) => a.innerText.length - b.innerText.length)
+          let raw = candidates[0] ? candidates[0].innerText.trim() : ''
+          if (raw.startsWith('About this file.')) {
+            const idx = raw.indexOf(NL + targetName + NL)
+            if (idx >= 0) {
+              raw = raw.slice(idx + NL.length + targetName.length + NL.length).trim()
+            }
+          } else if (raw.startsWith(targetName + NL)) {
+            raw = raw.slice(targetName.length + NL.length).trim()
+          }
+
+          history.pushState({}, '', '/')
+          window.dispatchEvent(new PopStateEvent('popstate'))
+          await new Promise(r => setTimeout(r, 300))
+          return raw || '（文件为空或暂无法读取预览）'
+        })()
+      `)
+      return { fileName: cleanName, content }
+    } catch (err: any) {
+      return {
+        fileName: cleanName,
+        content: `读取云端文件失败: ${err?.message || String(err)}`,
+      }
+    } finally {
+      this.isFetchingCloudData = false
+    }
+  }
+
+  public async openCloudConsole(target: MuseCloudConsoleTarget = 'main'): Promise<boolean> {
+    const cookies = this.sessionStore.getCookies()
+    if (!cookies) return false
+    try {
+      const win = await this.ensureMuseWindow(cookies)
+      win.setSkipTaskbar(false)
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+
+      await win.webContents.executeJavaScript(`
+        (async function() {
+          const target = ${JSON.stringify(target)}
+          const go = async (p) => {
+            history.pushState({}, '', p)
+            window.dispatchEvent(new PopStateEvent('popstate'))
+            await new Promise(r => setTimeout(r, 500))
+          }
+          if (target === 'library') {
+            await go('/library/files')
+          } else if (target === 'goals') {
+            await go('/goals')
+          } else if (target === 'ideas') {
+            await go('/ideas')
+          } else {
+            await go('/')
+            if (target === 'wardrobe') {
+              await new Promise(r => setTimeout(r, 350))
+              const editBtn = document.querySelector('[data-pel-click="status_avatar_edit_menu_open"]')
+              if (editBtn) editBtn.click()
+            }
+          }
+        })()
+      `)
+      return true
+    } catch (err) {
+      console.error('openCloudConsole error:', err)
+      return false
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Profile
   // ---------------------------------------------------------------------------
 
@@ -696,6 +1075,11 @@ export class MuseClient {
     // Wait for composer textarea AND initial chat history to finish mounting
     const composerReady = await win.webContents.executeJavaScript(`
       (async function() {
+        if (location.pathname !== '/') {
+          history.pushState({}, '', '/')
+          window.dispatchEvent(new PopStateEvent('popstate'))
+          await new Promise(r => setTimeout(r, 350))
+        }
         const start = Date.now()
         while (Date.now() - start < 20000) {
           const ta = document.querySelector('textarea')

@@ -111,6 +111,48 @@ export interface WindowBounds {
   height: number
 }
 
+export interface MuseScheduledTask {
+  title: string
+  schedule: string
+}
+
+export interface MuseActivityEntry {
+  day: string
+  time: string
+  title: string
+  summary: string
+}
+
+export interface MuseCloudGoal {
+  title: string
+  description: string
+}
+
+export interface MuseCloudIdea {
+  title: string
+  description: string
+}
+
+export interface MuseCloudFileItem {
+  name: string
+  type: 'folder' | 'file'
+  modified?: string
+  size?: string
+}
+
+export interface MuseCloudSnapshot {
+  agentName: string
+  identityVibe?: string
+  scheduledTasks: MuseScheduledTask[]
+  activities: MuseActivityEntry[]
+  goals: MuseCloudGoal[]
+  ideas: MuseCloudIdea[]
+  files: MuseCloudFileItem[]
+  updatedAt: number
+}
+
+export type MuseCloudConsoleTarget = 'main' | 'wardrobe' | 'library' | 'goals' | 'ideas'
+
 export interface ChatApi {
   sendMessage: (content: string) => Promise<void>
   stopGeneration: () => void
@@ -149,6 +191,10 @@ export interface ChatApi {
   togglePlugin: (id: string) => Promise<SecretaryState>
   removePlugin: (id: string) => Promise<SecretaryState>
   resetAllPlugins: () => Promise<SecretaryState>
+  // Muse Cloud Hub & Native Console APIs
+  getCloudSnapshot: (forceRefresh?: boolean) => Promise<MuseCloudSnapshot>
+  readCloudFile: (fileName: string) => Promise<{ fileName: string; content: string }>
+  openCloudConsole: (target?: MuseCloudConsoleTarget) => Promise<boolean>
 }
 
 declare global {
