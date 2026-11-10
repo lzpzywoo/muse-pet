@@ -1,22 +1,54 @@
 {
   "name": "muse-pet",
-  "version": "0.1.0",
-  "description": "Windows Desktop AI Companion for Meta Muse",
+  "version": "1.0.0",
+  "description": "Desktop AI Companion, Liquid Glass Spotlight Terminal & Local PC Secretary for Meta Muse",
   "main": "dist-electron/main/index.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit && vite build",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "npm run build && electron-builder --dir"
   },
   "keywords": [
     "desktop-pet",
     "ai",
     "meta-muse",
-    "electron"
+    "electron",
+    "liquid-glass",
+    "ai-secretary"
   ],
-  "author": "",
+  "author": "remy <114157947+lzpzywoo@users.noreply.github.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lzpzywoo/muse-pet.git"
+  },
+  "homepage": "https://github.com/lzpzywoo/muse-pet#readme",
   "license": "MIT",
+  "build": {
+    "appId": "com.remy.musepet",
+    "productName": "Muse Pet",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "zip"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity"
+    }
+  },
   "dependencies": {
     "clsx": "^2.1.1",
     "lucide-react": "^1.16.0",
