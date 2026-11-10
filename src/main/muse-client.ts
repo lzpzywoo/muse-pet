@@ -98,6 +98,10 @@ export class MuseClient {
     }
   }
 
+  public isChatTurnActive(): boolean {
+    return this.isSendingChat
+  }
+
   public onAvatarSynced(cb: (assets: AvatarAssets) => void) {
     this.onAvatarSyncedCallbacks.push(cb)
   }

@@ -59,21 +59,24 @@ export function registerIpcHandlers(
   loadPersistedHistory()
   museClient.startCloudMessageWatcher()
 
-  // Receive background cloud message updates (e.g., from muse.ai web or initial cloud history)
+  // Receive background cloud message updates (e.g., from muse.ai web, media attachments, or initial cloud history)
   museClient.onCloudMessagesUpdated((cloudMessages, newAssistantMsg) => {
-    if (cloudMessages.length > 0 && messageHistory.length === 0) {
+    if (cloudMessages.length > 0) {
+      const hadNewAssistant =
+        newAssistantMsg &&
+        !messageHistory.some(
+          (m) =>
+            m.id === newAssistantMsg.id ||
+            (m.role === 'assistant' &&
+              m.content === newAssistantMsg.content &&
+              (m.attachments?.length || 0) === (newAssistantMsg.attachments?.length || 0))
+        )
+
       messageHistory = cloudMessages
       savePersistedHistory()
       broadcastMessagesSynced()
-    } else if (newAssistantMsg) {
-      const exists = messageHistory.some(
-        (m) => m.id === newAssistantMsg.id || (m.role === 'assistant' && m.content === newAssistantMsg.content)
-      )
-      if (!exists) {
-        messageHistory = cloudMessages
-        savePersistedHistory()
-        broadcastMessagesSynced()
 
+      if (hadNewAssistant && newAssistantMsg && !museClient.isChatTurnActive()) {
         const chatWin = windowManager.getChatWindow()
         const isChatHidden = !chatWin || chatWin.isDestroyed() || !chatWin.isVisible()
         if (isChatHidden) {
@@ -153,11 +156,14 @@ export function registerIpcHandlers(
   })
 
   ipcMain.handle('chat:get-messages', async () => {
-    if (messageHistory.length === 0 && sessionStore.getProfile().isLoggedIn) {
-      const cloud = await museClient.fetchCloudMessages(false)
-      if (cloud.length > 0) {
-        messageHistory = cloud
-        savePersistedHistory()
+    if (sessionStore.getProfile().isLoggedIn) {
+      const hasAnyAttachments = messageHistory.some((m) => (m.attachments?.length || 0) > 0)
+      if (messageHistory.length === 0 || !hasAnyAttachments) {
+        const cloud = await museClient.fetchCloudMessages(false)
+        if (cloud.length > 0) {
+          messageHistory = cloud
+          savePersistedHistory()
+        }
       }
     }
     return messageHistory
@@ -165,6 +171,7 @@ export function registerIpcHandlers(
 
   ipcMain.handle('chat:sync-messages', async () => {
     if (sessionStore.getProfile().isLoggedIn) {
+      museClient.syncAvatarAssets(true).catch(() => {})
       const cloud = await museClient.fetchCloudMessages(false)
       if (cloud.length > 0) {
         messageHistory = cloud

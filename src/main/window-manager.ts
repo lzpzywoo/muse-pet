@@ -94,6 +94,7 @@ export class WindowManager {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
+        webSecurity: false,
       },
     })
 
@@ -140,6 +141,7 @@ export class WindowManager {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
+        webSecurity: false,
       },
     })
 
