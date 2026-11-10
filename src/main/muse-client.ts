@@ -305,12 +305,15 @@ export class MuseClient {
           const saved = this.persistMediaAttachment(att.dataUrl, att.type, att.title)
           if (saved) attachments.push(saved)
         }
+        const strippedContent = (item.content || '')
+          .replace(/\n*\[MUSE_LOCAL_CONTEXT\][\s\S]*?\[\/MUSE_LOCAL_CONTEXT\]/g, '')
+          .trim()
         const fallbackText =
-          !item.content && attachments.length > 0
+          !strippedContent && attachments.length > 0
             ? attachments.some((a) => a.type === 'video')
               ? '[虚拟形象动作预览]'
               : '[图片]'
-            : item.content
+            : strippedContent
         return {
           id: item.id,
           role: item.role,
@@ -634,7 +637,12 @@ export class MuseClient {
     content: string,
     onChunk: (chunk: string) => void,
     onEnd: (fullText: string) => void,
-    onError: (err: string) => void
+    onError: (err: string) => void,
+    options?: {
+      imageBase64?: string
+      imageMimeType?: string
+      imageFileName?: string
+    }
   ) {
     this.aborted = false
     this.isSendingChat = true
@@ -647,7 +655,7 @@ export class MuseClient {
       }
 
       try {
-        await this.sendViaMuseWindow(content, cookies, onChunk, onEnd, onError)
+        await this.sendViaMuseWindow(content, cookies, onChunk, onEnd, onError, options)
         // Sync cloud messages & attachments + detect any avatar change after our own turn finishes
         await this.fetchCloudMessages(true)
       } catch (err: any) {
@@ -673,7 +681,12 @@ export class MuseClient {
     cookies: string,
     onChunk: (chunk: string) => void,
     onEnd: (fullText: string) => void,
-    onError: (err: string) => void
+    onError: (err: string) => void,
+    options?: {
+      imageBase64?: string
+      imageMimeType?: string
+      imageFileName?: string
+    }
   ) {
     const win = await this.ensureMuseWindow(cookies)
     if (!this.getCachedAvatarAssets()) {
@@ -747,6 +760,44 @@ export class MuseClient {
                 .filter(el => el.getAttribute('data-message-role') === 'assistant')
                 .map(el => el.getAttribute('data-message-id'))
             )
+
+            // Optional: attach image (e.g., desktop screenshot) to muse.ai file input before sending
+            const imgB64 = ${JSON.stringify(options?.imageBase64 || '')}
+            const imgMime = ${JSON.stringify(options?.imageMimeType || 'image/png')}
+            const imgName = ${JSON.stringify(options?.imageFileName || 'desktop-screen.png')}
+            if (imgB64) {
+              try {
+                const fileInput = document.querySelector('input[type="file"]')
+                if (fileInput) {
+                  const binStr = atob(imgB64)
+                  const bytes = new Uint8Array(binStr.length)
+                  for (let i = 0; i < binStr.length; i++) {
+                    bytes[i] = binStr.charCodeAt(i)
+                  }
+                  const blob = new Blob([bytes], { type: imgMime })
+                  const file = new File([blob], imgName, { type: imgMime })
+                  const dt = new DataTransfer()
+                  dt.items.add(file)
+                  try {
+                    Object.defineProperty(fileInput, 'files', {
+                      value: dt.files,
+                      configurable: true,
+                    })
+                  } catch {
+                    fileInput.files = dt.files
+                  }
+                  const fPropsKey = Object.keys(fileInput).find(k => k.startsWith('__reactProps'))
+                  if (fPropsKey && fileInput[fPropsKey] && typeof fileInput[fPropsKey].onChange === 'function') {
+                    fileInput[fPropsKey].onChange({ target: fileInput, currentTarget: fileInput })
+                  } else {
+                    fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+                  }
+                  await new Promise(r => setTimeout(r, 1100))
+                }
+              } catch (attachErr) {
+                console.warn('Attach image failed:', attachErr)
+              }
+            }
 
             // Set value via native setter and invoke React's onChange prop directly
             const nativeSetter = Object.getOwnPropertyDescriptor(

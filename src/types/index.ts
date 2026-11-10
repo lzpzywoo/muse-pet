@@ -17,11 +17,23 @@ export interface ChatAttachment {
   title?: string
 }
 
+export interface PendingSecretaryAction {
+  id: string
+  type: 'powershell' | 'file_write'
+  title: string
+  command: string
+  description: string
+  status: 'pending' | 'approved' | 'denied' | 'executed' | 'error'
+  output?: string
+  executedAt?: number
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
   attachments?: ChatAttachment[]
+  pendingAction?: PendingSecretaryAction
   timestamp: number
   status?: 'pending' | 'streaming' | 'done' | 'error'
 }
@@ -87,6 +99,13 @@ export interface ChatApi {
   getProxyConfig: () => Promise<ProxyConfig>
   setProxyConfig: (config: ProxyConfig) => Promise<boolean>
   testProxyConnection: () => Promise<NetworkTestResult>
+  // Local Secretary Agent APIs
+  approveSecretaryAction: (actionId: string) => Promise<PendingSecretaryAction>
+  denySecretaryAction: (actionId: string) => Promise<PendingSecretaryAction>
+  runSecretaryCommand: (title: string, command: string) => Promise<PendingSecretaryAction>
+  captureScreenAndAsk: (prompt?: string) => Promise<void>
+  openGmailFilter: (filterQuery: string) => Promise<void>
+  onSecretaryActionUpdated: (callback: (action: PendingSecretaryAction) => void) => () => void
 }
 
 declare global {
