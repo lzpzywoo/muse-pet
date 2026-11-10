@@ -43,7 +43,7 @@ parent: muse-pet-goal
 ## Decisions
 
 ### 1. 多窗口隔离模型 (Pet Window + Chat Window + Auth Window)
-- **Pet Window**：尺寸为 `280 × 320`，设置 `transparent: true`, `frame: false`, `alwaysOnTop: true`, `skipTaskbar: true`。下半部渲染透明抠图后的 Meta Avatar 立绘及未读消息角标，上半部预留空间用于渲染 **实时冒泡回复气泡（Speech Bubble）**，在 Muse 思考、流式回答或收到新消息时直接浮现冒泡文案提醒，点击气泡或桌宠可一键呼出终端。
+- **Pet Window**：尺寸为 `280 × 320`，设置 `transparent: true`, `frame: false`, `alwaysOnTop: true`, `skipTaskbar: true`，默认开启 `setIgnoreMouseEvents(true, { forward: true })` 鼠标穿透转发。渲染层通过实时抠图掩码（`bgMaskRef`）与气泡/挂件几何边界进行 **像素级 Alpha 命中检测**：只有当鼠标悬停在人物不透明轮廓像素、活动冒泡气泡或挂件上时才捕获鼠标事件（支持按住人物轮廓拖拽移动位置或单击呼出终端），人物四周的透明背景与上方空白区完全穿透到底层桌面窗口，绝不遮挡周围点击。
 - **Chat Window (Spotlight / Liquid Glass Terminal HUD)**：宽幅独立窗口（默认 `640 × 560`，最小 `460 × 380`），默认隐藏。支持通过鼠标拖拽窗口四边、四角及右下角斜纹手柄 8 方向自由缩放大小（或点击左上角绿灯 `+` / 双击标题栏一键放大/还原），并将调整后的宽高与坐标自动持久化在 `userData/chat_bounds.json`。全局快捷键（`Alt + Space`）或点击桌面宠物触发显隐，首次在主屏幕中上方黄金视觉位（水平居中、距顶约 16%）弹出。默认采用 **100% 不透明曜石纯黑（Obsidian Solid）** 基底搭配 Apple Liquid Glass 顶部高光折射边（避免底层桌面干扰阅读），并支持在 `/settings`（或通过 `/solid`、`/glass`、`/theme` 命令与不透明度滑块 `45%~100%`）自由切换并持久化窗口材质与透明度。支持 `Esc` 键一键收起、macOS 红黄绿交通灯控制、`luna ❯` 终端提示符、`/sync` 云端历史同步与 `↑`/`↓` 历史命令回溯。
 - **Auth Window**：独立的临时 Webview 窗口，仅在用户首次登录或凭证过期时调出，加载 `https://muse.ai`。统一伪装标准 Chrome User-Agent 规避反爬，监听 `session.fromPartition('persist:meta_muse').webRequest.onCompleted`，自动提取 Meta 核心认证 Cookie，保存后立即自毁；若加载失败注入带一键重试的故障排查诊断页。
 - **Proxy Manager**：统一代理调度体系，应用启动时默认激活 Windows 系统代理（`mode: 'system'`），支持自定义 fixed_servers 代理规则并提供实时测速与手动 Cookie 录入兜底。

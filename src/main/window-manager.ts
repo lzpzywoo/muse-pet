@@ -128,6 +128,10 @@ export class WindowManager {
       }
     })
 
+    // Default to click-through with mousemove forwarding so transparent areas around the pet
+    // and empty bubble space above never block clicks on underlying desktop/windows.
+    this.petWindow.setIgnoreMouseEvents(true, { forward: true })
+
     // Load URL
     if (process.env.VITE_DEV_SERVER_URL) {
       this.petWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}pet.html`)

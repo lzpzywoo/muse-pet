@@ -158,12 +158,19 @@ export default function PetApp() {
   const [isBlinking, setIsBlinking] = useState(false)
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const bubbleBoxRef = useRef<HTMLDivElement | null>(null)
+  const petInteractiveRef = useRef<HTMLDivElement | null>(null)
   const petPluginDockRef = useRef<HTMLDivElement | null>(null)
   const defaultVideoRef = useRef<HTMLVideoElement | null>(null)
   const workingVideoRef = useRef<HTMLVideoElement | null>(null)
   const resumeVideoRef = useRef<HTMLVideoElement | null>(null)
   const staticImgRef = useRef<HTMLImageElement | null>(null)
   const activeVariantRef = useRef<'default' | 'working' | 'resume'>('default')
+  // 0 = character foreground pixel, 1 = transparent background pixel
+  const bgMaskRef = useRef<Uint8Array | null>(null)
+  const hasCutoutFrameRef = useRef(false)
+  const ignoreMouseRef = useRef<boolean>(true)
+  const isDraggingPetRef = useRef<boolean>(false)
 
   const activeVideoVariant: 'default' | 'working' | 'resume' =
     avatarState === 'thinking'
@@ -289,6 +296,7 @@ export default function PetApp() {
 
     const visited = new Uint8Array(CUTOUT_SIZE * CUTOUT_SIZE)
     const queue = new Int32Array(CUTOUT_SIZE * CUTOUT_SIZE)
+    bgMaskRef.current = visited
     let rafId = 0
     let lastDrawTime = 0
 
@@ -328,6 +336,7 @@ export default function PetApp() {
 
         if (drawn) {
           removeConnectedWhiteBackground(ctx, CUTOUT_SIZE, CUTOUT_SIZE, visited, queue)
+          hasCutoutFrameRef.current = true
           lastDrawTime = now
         }
       }
@@ -338,18 +347,158 @@ export default function PetApp() {
     return () => cancelAnimationFrame(rafId)
   }, [avatarAssets])
 
-  const handleMouseEnter = () => {
-    setIsHovered(true)
-    window.petApi?.setIgnoreMouseEvents(false)
-  }
+  // Pixel-accurate hit testing so transparent space around the character and above the pet
+  // passes clicks directly through to underlying desktop/windows.
+  useEffect(() => {
+    const setIgnoreState = (nextIgnore: boolean) => {
+      if (ignoreMouseRef.current !== nextIgnore) {
+        ignoreMouseRef.current = nextIgnore
+        window.petApi?.setIgnoreMouseEvents(nextIgnore)
+      }
+    }
 
-  const handleMouseLeave = () => {
-    setIsHovered(false)
-  }
+    // Start in click-through mode
+    window.petApi?.setIgnoreMouseEvents(true)
+    ignoreMouseRef.current = true
 
-  const handleClick = (e: React.MouseEvent) => {
+    const isPointInRect = (x: number, y: number, rect: DOMRect, pad = 0) =>
+      x >= rect.left - pad &&
+      x <= rect.right + pad &&
+      y >= rect.top - pad &&
+      y <= rect.bottom + pad
+
+    const checkOpaqueHit = (clientX: number, clientY: number): { hit: boolean; onPet: boolean } => {
+      if (isDraggingPetRef.current) {
+        return { hit: true, onPet: true }
+      }
+
+      // 1. Speech bubble hit test
+      if (bubbleBoxRef.current) {
+        const rect = bubbleBoxRef.current.getBoundingClientRect()
+        if (rect.width > 0 && rect.height > 0 && isPointInRect(clientX, clientY, rect, 2)) {
+          return { hit: true, onPet: false }
+        }
+      }
+
+      // 2. Pet plugin widget dock hit test (only when visible children exist)
+      if (petPluginDockRef.current && petPluginDockRef.current.children.length > 0) {
+        for (const child of Array.from(petPluginDockRef.current.children)) {
+          const rect = child.getBoundingClientRect()
+          if (rect.width > 0 && rect.height > 0 && isPointInRect(clientX, clientY, rect, 2)) {
+            return { hit: true, onPet: false }
+          }
+        }
+      }
+
+      // 3. Character silhouette canvas pixel hit test
+      if (canvasRef.current) {
+        const rect = canvasRef.current.getBoundingClientRect()
+        if (rect.width > 0 && rect.height > 0 && isPointInRect(clientX, clientY, rect, 0)) {
+          const mask = bgMaskRef.current
+          if (mask && hasCutoutFrameRef.current) {
+            const cx = Math.floor(((clientX - rect.left) / rect.width) * CUTOUT_SIZE)
+            const cy = Math.floor(((clientY - rect.top) / rect.height) * CUTOUT_SIZE)
+            // Check a small 6px radius in 360x360 space (~3px screen tolerance) for foreground pixels
+            const R = 6
+            for (let dy = -R; dy <= R; dy += 2) {
+              const py = cy + dy
+              if (py < 0 || py >= CUTOUT_SIZE) continue
+              for (let dx = -R; dx <= R; dx += 2) {
+                const px = cx + dx
+                if (px < 0 || px >= CUTOUT_SIZE) continue
+                if (mask[py * CUTOUT_SIZE + px] === 0) {
+                  return { hit: true, onPet: true }
+                }
+              }
+            }
+            return { hit: false, onPet: false }
+          }
+          // Before first cutout frame lands, use a tight central ellipse
+          const nx = (clientX - (rect.left + rect.width / 2)) / (rect.width * 0.32)
+          const ny = (clientY - (rect.top + rect.height / 2)) / (rect.height * 0.42)
+          if (nx * nx + ny * ny <= 1) {
+            return { hit: true, onPet: true }
+          }
+          return { hit: false, onPet: false }
+        }
+      }
+
+      // 4. Fallback orb hit test (when no Muse avatar is loaded)
+      if (!canvasRef.current && petInteractiveRef.current) {
+        const rect = petInteractiveRef.current.getBoundingClientRect()
+        if (rect.width > 0 && rect.height > 0) {
+          const r = Math.min(rect.width, rect.height) * 0.46
+          const dx = clientX - (rect.left + rect.width / 2)
+          const dy = clientY - (rect.top + rect.height / 2)
+          if (dx * dx + dy * dy <= r * r) {
+            return { hit: true, onPet: true }
+          }
+        }
+      }
+
+      return { hit: false, onPet: false }
+    }
+
+    const onMouseMove = (e: MouseEvent) => {
+      const { hit, onPet } = checkOpaqueHit(e.clientX, e.clientY)
+      setIgnoreState(!hit)
+      setIsHovered(onPet)
+    }
+
+    const onMouseLeave = () => {
+      if (!isDraggingPetRef.current) {
+        setIgnoreState(true)
+        setIsHovered(false)
+      }
+    }
+
+    window.addEventListener('mousemove', onMouseMove, { passive: true })
+    document.addEventListener('mouseleave', onMouseLeave)
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseleave', onMouseLeave)
+    }
+  }, [])
+
+  // Drag pet by character silhouette or click to summon/hide terminal
+  const handlePetMouseDown = async (e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()
     e.stopPropagation()
-    window.petApi?.toggleChat()
+
+    const startScreenX = e.screenX
+    const startScreenY = e.screenY
+    const startPos = (await window.petApi?.getPosition?.()) || {
+      x: window.screenX,
+      y: window.screenY,
+    }
+    let moved = false
+    isDraggingPetRef.current = true
+    window.petApi?.setIgnoreMouseEvents(false)
+    ignoreMouseRef.current = false
+
+    const onMove = (ev: MouseEvent) => {
+      const dx = ev.screenX - startScreenX
+      const dy = ev.screenY - startScreenY
+      if (!moved && Math.hypot(dx, dy) > 4) {
+        moved = true
+      }
+      if (moved) {
+        window.petApi?.setPosition?.(startPos.x + dx, startPos.y + dy)
+      }
+    }
+
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      isDraggingPetRef.current = false
+      if (!moved) {
+        window.petApi?.toggleChat()
+      }
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
   }
 
   // Contour drop-shadow based on avatar state (glows around the character silhouette, no circle frame)
@@ -380,11 +529,7 @@ export default function PetApp() {
     .join('\n')
 
   return (
-    <div
-      className="w-screen h-screen flex flex-col items-center justify-end pb-3 select-none relative overflow-hidden"
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
-    >
+    <div className="w-screen h-screen flex flex-col items-center justify-end pb-3 select-none relative overflow-hidden">
       {combinedPetCss && <style id="muse-pet-plugins-css">{combinedPetCss}</style>}
       {/* Hidden media sources for offscreen cutout processing */}
       {hasMuseAvatar && (
@@ -440,6 +585,7 @@ export default function PetApp() {
       {/* Speech Bubble (冒泡文案 & 新消息提醒) */}
       {bubble && (
         <div
+          ref={bubbleBoxRef}
           onMouseEnter={() => setIsBubbleHovered(true)}
           onMouseLeave={() => setIsBubbleHovered(false)}
           onClick={() => {
@@ -531,8 +677,9 @@ export default function PetApp() {
 
       {/* Pet Interactive Container */}
       <div
-        onClick={handleClick}
-        className={`draggable relative group cursor-grab active:cursor-grabbing transition-all duration-300 transform ${
+        ref={petInteractiveRef}
+        onMouseDown={handlePetMouseDown}
+        className={`no-drag relative group cursor-grab active:cursor-grabbing transition-all duration-300 transform ${
           avatarState === 'idle' ? 'animate-breathe' : ''
         } ${avatarState === 'talking' ? 'animate-bounce-subtle' : ''}`}
       >

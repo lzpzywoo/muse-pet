@@ -544,10 +544,26 @@ export function registerIpcHandlers(
     sendPetBubble(null)
   })
 
-  ipcMain.on('pet:set-ignore-mouse-events', (event, ignore: boolean) => {
+  ipcMain.on('pet:set-ignore-mouse-events', (_event, ignore: boolean) => {
     const win = windowManager.getPetWindow()
     if (win && !win.isDestroyed()) {
       win.setIgnoreMouseEvents(ignore, { forward: true })
+    }
+  })
+
+  ipcMain.handle('pet:get-position', () => {
+    const win = windowManager.getPetWindow()
+    if (win && !win.isDestroyed()) {
+      const [x, y] = win.getPosition()
+      return { x, y }
+    }
+    return { x: 0, y: 0 }
+  })
+
+  ipcMain.on('pet:set-position', (_event, pos: { x: number; y: number }) => {
+    const win = windowManager.getPetWindow()
+    if (win && !win.isDestroyed() && typeof pos?.x === 'number' && typeof pos?.y === 'number') {
+      win.setPosition(Math.round(pos.x), Math.round(pos.y))
     }
   })
 

@@ -114,6 +114,8 @@ export interface PetApi {
   onSpeechBubble: (callback: (payload: PetBubblePayload | null) => void) => () => void
   dismissBubble: () => void
   setIgnoreMouseEvents: (ignore: boolean) => void
+  getPosition: () => Promise<{ x: number; y: number }>
+  setPosition: (x: number, y: number) => void
   close: () => void
   getAvatarState: () => Promise<AvatarState>
   getPlugins: () => Promise<MusePlugin[]>

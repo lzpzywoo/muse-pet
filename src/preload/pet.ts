@@ -35,6 +35,12 @@ const petApi: PetApi = {
   setIgnoreMouseEvents: (ignore: boolean) => {
     ipcRenderer.send('pet:set-ignore-mouse-events', ignore)
   },
+  getPosition: () => {
+    return ipcRenderer.invoke('pet:get-position')
+  },
+  setPosition: (x: number, y: number) => {
+    ipcRenderer.send('pet:set-position', { x, y })
+  },
   close: () => {
     ipcRenderer.send('app:quit')
   },
