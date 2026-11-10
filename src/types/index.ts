@@ -28,34 +28,6 @@ export interface PendingSecretaryAction {
   executedAt?: number
 }
 
-export interface SecretaryReminder {
-  id: string
-  title: string
-  dueAt: number
-  createdAt: number
-  fired: boolean
-  source: 'reminder' | 'focus' | 'meeting'
-}
-
-export interface SecretaryTodoItem {
-  id: string
-  text: string
-  done: boolean
-  createdAt: number
-  completedAt?: number
-}
-
-export type WorkflowMacroId = 'work' | 'focus' | 'meeting' | 'off'
-
-export interface WorkflowMacroConfig {
-  id: WorkflowMacroId
-  name: string
-  description: string
-  urls: string[]
-  apps: string[]
-  defaultMinutes?: number
-}
-
 export interface MusePlugin {
   id: string
   name: string
@@ -72,11 +44,7 @@ export interface MusePlugin {
 }
 
 export interface SecretaryState {
-  reminders: SecretaryReminder[]
-  todos: SecretaryTodoItem[]
-  workflows: Record<WorkflowMacroId, WorkflowMacroConfig>
   plugins: MusePlugin[]
-  lastBriefDate?: string
 }
 
 export interface ChatMessage {
@@ -173,21 +141,8 @@ export interface ChatApi {
   captureScreenAndAsk: (prompt?: string) => Promise<void>
   openGmailFilter: (filterQuery: string) => Promise<void>
   onSecretaryActionUpdated: (callback: (action: PendingSecretaryAction) => void) => () => void
-  // Proactive Briefing, Schedule & Workspace Workflows APIs
+  // Secretary State (plugins only)
   getSecretaryState: () => Promise<SecretaryState>
-  updateWorkflowConfig: (
-    id: WorkflowMacroId,
-    patch: Partial<WorkflowMacroConfig>
-  ) => Promise<SecretaryState>
-  addSecretaryReminder: (
-    title: string,
-    delayMinutes: number,
-    source?: SecretaryReminder['source']
-  ) => Promise<SecretaryState>
-  removeSecretaryReminder: (id: string) => Promise<SecretaryState>
-  addSecretaryTodo: (text: string) => Promise<SecretaryState>
-  toggleSecretaryTodo: (id: string) => Promise<SecretaryState>
-  removeSecretaryTodo: (id: string) => Promise<SecretaryState>
   onSecretaryStateUpdated: (callback: (state: SecretaryState) => void) => () => void
   // Self-Modifying UI & Live Plugin APIs
   installPlugin: (plugin: Omit<MusePlugin, 'id' | 'createdAt'> & { id?: string }) => Promise<SecretaryState>
