@@ -88,7 +88,7 @@ export class MuseClient {
         }
         return {
           type,
-          url: type === 'image' ? rawUrl : pathToFileURL(filePath).href,
+          url: pathToFileURL(filePath).href,
           title,
         }
       }
@@ -153,6 +153,37 @@ export class MuseClient {
               return dataUrl
             } catch {
               return null
+            }
+          }
+
+          // Force-hydrate any lazy media widgets stuck in skeleton state because the window is hidden
+          const mediaWidgets = Array.from(
+            document.querySelectorAll(
+              '[data-testid^="hatch-chat-attachment-presentation-"]'
+            )
+          )
+          let hydratedAny = false
+          for (const w of mediaWidgets) {
+            if (w.querySelector('[data-slot="skeleton"]') && !w.querySelector('img, video')) {
+              const fk = Object.keys(w).find((k) => k.startsWith('__reactFiber'))
+              const cur = fk ? w[fk]?.child?.child : null
+              const fn = cur?.updateQueue?.memoCache?.data?.[0]?.[2]
+              if (typeof fn === 'function') {
+                try {
+                  fn(true)
+                  hydratedAny = true
+                } catch {}
+              }
+            }
+          }
+          if (hydratedAny) {
+            const waitStart = Date.now()
+            while (Date.now() - waitStart < 3500) {
+              const allReady = mediaWidgets.every(
+                (w) => !w.querySelector('[data-slot="skeleton"]') || w.querySelector('img, video')
+              )
+              if (allReady) break
+              await new Promise((r) => setTimeout(r, 250))
             }
           }
 

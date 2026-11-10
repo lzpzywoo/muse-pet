@@ -52,11 +52,11 @@ parent: muse-pet-goal
 - **通信收口（隐藏 BrowserWindow 桥接）**：`muse.ai` 采用 Meta Hatch 架构（基于 `/api/hatch/*` 与 `Noise_XX_25519` 加密 WebSocket 通道及 TLS/JA3 指纹校验）。主进程 `MuseClient` 维护一个共享 `persist:meta_muse` 分区的隐藏 `BrowserWindow` 实例，直接利用真实 Chromium 环境与页面内置的 Hatch Composer/Noise 通道收发消息，避免外部请求被风控拦截。
 - **防风控与协议伪装**：`AuthWindow` 与隐藏 `museWindow` 共享 `persist:meta_muse` 分区并注入标准桌面 Chrome User-Agent，仅当检测到核心登录态 Cookie `hatch_sess` 时判定鉴权成功。
 - **加密存储**：Meta 登录会话与 Cookie 在 `app.whenReady()` 之后使用 Electron 原生 `safeStorage` 进行操作系统级别的对称加密存储与恢复，杜绝明文凭证泄漏与启动时序导致的解密失败。
-- **流式分发与云端双向同步**：主进程从隐藏 `museWindow` 实时轮询新增的助手回复增量文本，一边向下游转发至 Chat 渲染进程，一边向 Pet 渲染进程同步推送 `pet:speech-bubble` 实时冒泡文案与未读角标提醒；同时自动从 `muse.ai` 的 `[data-message-item="true"]` 节点提取并后台监听云端会话历史，持久化至本地 `userData/chat_history.json` 并通过 `chat:messages-synced` 与 `ChatWindow` 保持双向同步。
+- **流式分发、富媒体附件与云端双向同步**：主进程从隐藏 `museWindow` 实时轮询新增的助手回复增量文本，一边向下游转发至 Chat 渲染进程，一边向 Pet 渲染进程同步推送 `pet:speech-bubble` 实时冒泡文案与未读角标提醒；同时自动从 `muse.ai` 的 `[data-message-item="true"]` 节点提取并后台监听云端会话历史（针对因窗口隐藏而处于懒加载骨架屏状态的 `[data-testid^="hatch-chat-attachment-presentation-"]` 媒体组件主动触发 React 可见性回调，将聊天内的 `blob:` 图片与动作预览视频转换并持久化缓存至 `userData/media_cache/`，供 `ChatWindow` 内联展示及全屏 Lightbox 预览），持久化至本地 `userData/chat_history.json` 并通过 `chat:messages-synced` 与 `ChatWindow` 保持双向同步。
 
 ### 3. Meta Avatar 状态驱动与本地缓存机制
 - 建立状态机：`IDLE`（待机呼吸）、`LISTENING`（面板打开等待输入）、`THINKING`（正在向 Muse 请求）、`TALKING`（正在流式接收文本并合成口型/动作）、`ERROR`（异常或断网提示）。
-- **多状态视频提取与持久化缓存**：`MuseClient` 从隐藏 `museWindow` 的 `video[data-hatch-avatar-layer]` 及其 React Fiber 状态中提取用户的专属虚拟形象高清静态图（WebP）与多状态 720p 循环视频（`default`、`working`、`resume`）及智能体名称（如 `Luna`），持久化缓存至 `userData/avatar_cache/`，下次启动无需等待网络即可秒级渲染。
+- **多状态视频提取、持久化缓存与实时换装热更新**：`MuseClient` 从隐藏 `museWindow` 排除聊天消息内部后的主舞台 `video[data-hatch-avatar-layer]` 及其 React Fiber 状态中提取用户的专属虚拟形象高清静态图（WebP）与多状态 720p 循环视频（`default`、`working`、`resume`）及智能体名称（如 `Luna`），持久化缓存至 `userData/avatar_cache/` 并记录资产签名 `avatarSignature`。后台轮询与对话结束时自动比对主舞台 `avatarSignature`，一旦检测到用户在 `muse.ai` 更换服装或形象，立即触发强制重新提取并通过 `avatar:assets-updated` 与 `auth:status-changed` 实时热更新桌面宠物与终端头像。
 - **双窗口同步呈现与透明人物抠图**：`PetWindow` 采用隐藏多状态 `<video>` + 30fps `<canvas>` 实时四边界连通域洪水填充（Edge-Connected Flood Fill）与边缘反算去白边（Color Unmixing），将视频中的纯白背景完全抠除为透明（`alpha = 0`）同时完整保留人物眼白与高光细节，以无外框的纯人物立绘悬浮展示；`ChatWindow` 同步使用提取到的静态头像与智能体名称替换标题栏与消息列表图标。
 
 ### 4. 代码结构与工程划分

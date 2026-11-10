@@ -339,6 +339,7 @@ export default function PetApp() {
           {avatarAssets?.staticImageUrl && (
             <img
               ref={staticImgRef}
+              key={`src-static-${avatarAssets.updatedAt || avatarAssets.staticImageUrl}`}
               src={avatarAssets.staticImageUrl}
               alt=""
               crossOrigin="anonymous"
@@ -347,7 +348,7 @@ export default function PetApp() {
           {defaultVideoUrl && (
             <video
               ref={defaultVideoRef}
-              key={`src-default-${defaultVideoUrl}`}
+              key={`src-default-${avatarAssets?.updatedAt}-${defaultVideoUrl}`}
               src={defaultVideoUrl}
               autoPlay
               loop
@@ -359,7 +360,7 @@ export default function PetApp() {
           {workingVideoUrl && (
             <video
               ref={workingVideoRef}
-              key={`src-working-${workingVideoUrl}`}
+              key={`src-working-${avatarAssets?.updatedAt}-${workingVideoUrl}`}
               src={workingVideoUrl}
               autoPlay
               loop
@@ -371,7 +372,7 @@ export default function PetApp() {
           {resumeVideoUrl && (
             <video
               ref={resumeVideoRef}
-              key={`src-resume-${resumeVideoUrl}`}
+              key={`src-resume-${avatarAssets?.updatedAt}-${resumeVideoUrl}`}
               src={resumeVideoUrl}
               autoPlay
               loop

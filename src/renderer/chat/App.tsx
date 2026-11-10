@@ -106,6 +106,11 @@ export default function ChatApp() {
   const [authProfile, setAuthProfile] = useState<UserProfile>({ isLoggedIn: false })
   const [showSettings, setShowSettings] = useState(false)
   const [isCompact, setIsCompact] = useState(false)
+  const [previewMedia, setPreviewMedia] = useState<{
+    type: 'image' | 'video'
+    url: string
+    title?: string
+  } | null>(null)
 
   // Terminal appearance configuration (default: 100% solid obsidian black, user-configurable)
   const [appearance, setAppearance] = useState<{
@@ -167,7 +172,9 @@ export default function ChatApp() {
     const onFocus = () => textareaRef.current?.focus()
     const onGlobalKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (showSettings) {
+        if (previewMedia) {
+          setPreviewMedia(null)
+        } else if (showSettings) {
           setShowSettings(false)
         } else {
           window.chatApi?.hide()
@@ -180,7 +187,7 @@ export default function ChatApp() {
       window.removeEventListener('focus', onFocus)
       window.removeEventListener('keydown', onGlobalKeyDown)
     }
-  }, [showSettings])
+  }, [showSettings, previewMedia])
 
   // Load auth status, proxy config & messages on mount
   useEffect(() => {
@@ -765,8 +772,45 @@ export default function ChatApp() {
                   <span className="font-terminal text-sky-400 font-bold text-xs mt-0.5 select-none">
                     ❯
                   </span>
-                  <div className="font-terminal text-[13px] text-sky-100 whitespace-pre-wrap break-words flex-1">
-                    {msg.content}
+                  <div className="flex-1 min-w-0 space-y-2">
+                    <div className="font-terminal text-[13px] text-sky-100 whitespace-pre-wrap break-words">
+                      {msg.content}
+                    </div>
+                    {msg.attachments && msg.attachments.length > 0 && (
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {msg.attachments.map((att, aIdx) =>
+                          att.type === 'image' ? (
+                            <button
+                              key={aIdx}
+                              type="button"
+                              onClick={() => setPreviewMedia(att)}
+                              className="group relative rounded-xl overflow-hidden border border-white/15 bg-black/40 hover:border-sky-400/60 transition-all shadow-md"
+                            >
+                              <img
+                                src={att.url}
+                                alt={att.title || 'attachment'}
+                                className="max-h-48 max-w-[260px] object-contain block"
+                              />
+                            </button>
+                          ) : (
+                            <div
+                              key={aIdx}
+                              onClick={() => setPreviewMedia(att)}
+                              className="cursor-pointer rounded-xl overflow-hidden border border-white/15 bg-black/40 hover:border-sky-400/60 transition-all shadow-md"
+                            >
+                              <video
+                                src={att.url}
+                                autoPlay
+                                loop
+                                muted
+                                playsInline
+                                className="max-h-52 max-w-[260px] object-contain block"
+                              />
+                            </div>
+                          )
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               )
@@ -798,7 +842,7 @@ export default function ChatApp() {
                   </div>
                 )}
 
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0 space-y-2">
                   <div className="flex items-center gap-2 mb-1 font-terminal text-[11px] text-slate-300/75">
                     <span className="text-sky-300 font-medium">{agentDisplayName}</span>
                     <span>·</span>
@@ -809,10 +853,54 @@ export default function ChatApp() {
                       content={msg.content}
                       isStreaming={msg.status === 'streaming'}
                     />
-                  ) : (
+                  ) : !msg.attachments || msg.attachments.length === 0 ? (
                     <div className="flex items-center gap-2 font-terminal text-xs text-sky-300/80 py-0.5">
                       <span>thinking</span>
                       <span className="animate-terminal-cursor" />
+                    </div>
+                  ) : null}
+
+                  {msg.attachments && msg.attachments.length > 0 && (
+                    <div className="flex flex-wrap gap-2.5 pt-1">
+                      {msg.attachments.map((att, aIdx) =>
+                        att.type === 'image' ? (
+                          <button
+                            key={aIdx}
+                            type="button"
+                            onClick={() => setPreviewMedia(att)}
+                            title="点击放大查看图片"
+                            className="group relative rounded-xl overflow-hidden border border-white/15 bg-black/50 hover:border-sky-400/60 transition-all shadow-lg"
+                          >
+                            <img
+                              src={att.url}
+                              alt={att.title || 'Muse Image'}
+                              className="max-h-56 max-w-[300px] object-contain block group-hover:scale-[1.02] transition-transform duration-200"
+                            />
+                            <div className="absolute bottom-1.5 right-1.5 px-2 py-0.5 rounded-md bg-black/70 backdrop-blur-md border border-white/15 font-terminal text-[10px] text-sky-200 opacity-0 group-hover:opacity-100 transition-opacity">
+                              点击放大
+                            </div>
+                          </button>
+                        ) : (
+                          <div
+                            key={aIdx}
+                            onClick={() => setPreviewMedia(att)}
+                            title="点击放大查看视频"
+                            className="group relative cursor-pointer rounded-xl overflow-hidden border border-white/15 bg-black/50 hover:border-sky-400/60 transition-all shadow-lg"
+                          >
+                            <video
+                              src={att.url}
+                              autoPlay
+                              loop
+                              muted
+                              playsInline
+                              className="max-h-60 max-w-[260px] object-contain block"
+                            />
+                            <div className="absolute bottom-1.5 right-1.5 px-2 py-0.5 rounded-md bg-black/70 backdrop-blur-md border border-white/15 font-terminal text-[10px] text-sky-200 opacity-85 group-hover:opacity-100 transition-opacity">
+                              {att.title || '动作预览 · 点击放大'}
+                            </div>
+                          </div>
+                        )
+                      )}
                     </div>
                   )}
                 </div>
@@ -896,6 +984,46 @@ export default function ChatApp() {
             <span>muse.ai · liquid-glass tty</span>
           </div>
         </div>
+
+        {/* Fullscreen Lightbox Modal for Image / Video Preview */}
+        {previewMedia && (
+          <div
+            onClick={() => setPreviewMedia(null)}
+            className="no-drag fixed inset-2 z-50 rounded-[22px] bg-black/90 backdrop-blur-xl flex flex-col items-center justify-center p-4 animate-in fade-in duration-150"
+          >
+            <div className="w-full flex items-center justify-between px-2 pb-2 font-terminal text-xs text-slate-300">
+              <span>{previewMedia.title || 'Muse Media Preview'}</span>
+              <button
+                onClick={() => setPreviewMedia(null)}
+                className="liquid-glass-pill px-2.5 py-1 rounded-lg text-slate-200 hover:text-white flex items-center gap-1"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>关闭 (Esc)</span>
+              </button>
+            </div>
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="flex-1 flex items-center justify-center overflow-hidden max-h-[460px] w-full"
+            >
+              {previewMedia.type === 'image' ? (
+                <img
+                  src={previewMedia.url}
+                  alt={previewMedia.title || 'preview'}
+                  className="max-h-full max-w-full object-contain rounded-xl border border-white/15 shadow-2xl"
+                />
+              ) : (
+                <video
+                  src={previewMedia.url}
+                  controls
+                  autoPlay
+                  loop
+                  playsInline
+                  className="max-h-full max-w-full object-contain rounded-xl border border-white/15 shadow-2xl"
+                />
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
