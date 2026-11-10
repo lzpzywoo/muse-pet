@@ -134,6 +134,13 @@ export interface NetworkTestResult {
   message?: string
 }
 
+export interface WindowBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export interface ChatApi {
   sendMessage: (content: string) => Promise<void>
   stopGeneration: () => void
@@ -145,6 +152,10 @@ export interface ChatApi {
   onMessagesSynced: (callback: (messages: ChatMessage[]) => void) => () => void
   clearMessages: () => Promise<void>
   hide: () => void
+  getBounds: () => Promise<WindowBounds>
+  setBounds: (bounds: Partial<WindowBounds>) => Promise<WindowBounds>
+  resetBounds: () => Promise<WindowBounds>
+  onBoundsChanged: (callback: (bounds: WindowBounds) => void) => () => void
   getAuthStatus: () => Promise<UserProfile>
   openLogin: () => Promise<void>
   logout: () => Promise<void>

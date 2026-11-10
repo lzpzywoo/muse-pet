@@ -48,6 +48,22 @@ const chatApi: ChatApi = {
   hide: () => {
     ipcRenderer.send('chat:hide')
   },
+  getBounds: () => {
+    return ipcRenderer.invoke('chat:get-bounds')
+  },
+  setBounds: (bounds) => {
+    return ipcRenderer.invoke('chat:set-bounds', bounds)
+  },
+  resetBounds: () => {
+    return ipcRenderer.invoke('chat:reset-bounds')
+  },
+  onBoundsChanged: (callback) => {
+    const subscription = (_event: any, bounds: any) => callback(bounds)
+    ipcRenderer.on('chat:bounds-changed', subscription)
+    return () => {
+      ipcRenderer.removeListener('chat:bounds-changed', subscription)
+    }
+  },
   getAuthStatus: (): Promise<UserProfile> => {
     return ipcRenderer.invoke('auth:get-status')
   },

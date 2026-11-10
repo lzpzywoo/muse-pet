@@ -159,6 +159,12 @@ export default function ChatApp() {
   const [authProfile, setAuthProfile] = useState<UserProfile>({ isLoggedIn: false })
   const [showSettings, setShowSettings] = useState(false)
   const [isCompact, setIsCompact] = useState(false)
+  const [winBounds, setWinBounds] = useState<{ width: number; height: number }>({
+    width: 640,
+    height: 560,
+  })
+  const [isResizing, setIsResizing] = useState(false)
+  const preZoomSizeRef = useRef<{ width: number; height: number } | null>(null)
   const [previewMedia, setPreviewMedia] = useState<{
     type: 'image' | 'video'
     url: string
@@ -354,6 +360,12 @@ export default function ChatApp() {
       if (st) setSecretaryState(st)
     })
 
+    window.chatApi?.getBounds().then((b) => {
+      if (b && b.width && b.height) {
+        setWinBounds({ width: b.width, height: b.height })
+      }
+    })
+
     window.chatApi?.getMessages().then((loaded) => {
       if (loaded && loaded.length > 0) {
         setMessages(loaded)
@@ -448,6 +460,12 @@ export default function ChatApp() {
       setSecretaryState(st)
     })
 
+    const unsubBounds = window.chatApi?.onBoundsChanged((b) => {
+      if (b && b.width && b.height) {
+        setWinBounds({ width: b.width, height: b.height })
+      }
+    })
+
     return () => {
       unsubChunk?.()
       unsubEnd?.()
@@ -456,6 +474,7 @@ export default function ChatApp() {
       unsubSynced?.()
       unsubSecAction?.()
       unsubSecState?.()
+      unsubBounds?.()
     }
   }, [])
 
@@ -717,17 +736,157 @@ export default function ChatApp() {
     setManualCookie('')
   }
 
+  // 8-direction mouse drag window resizing (for frameless transparent Electron window)
+  const startWindowResize = async (
+    dir: 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se',
+    e: React.MouseEvent
+  ) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startScreenX = e.screenX
+    const startScreenY = e.screenY
+    const initial = (await window.chatApi?.getBounds()) || {
+      x: window.screenX,
+      y: window.screenY,
+      width: winBounds.width,
+      height: winBounds.height,
+    }
+    setIsResizing(true)
+    setIsCompact(false)
+
+    const MIN_W = 460
+    const MIN_H = 380
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const dx = ev.screenX - startScreenX
+      const dy = ev.screenY - startScreenY
+      let nextX = initial.x
+      let nextY = initial.y
+      let nextW = initial.width
+      let nextH = initial.height
+
+      if (dir.includes('e')) {
+        nextW = Math.max(MIN_W, initial.width + dx)
+      }
+      if (dir.includes('s')) {
+        nextH = Math.max(MIN_H, initial.height + dy)
+      }
+      if (dir.includes('w')) {
+        const candidateW = initial.width - dx
+        if (candidateW >= MIN_W) {
+          nextW = candidateW
+          nextX = initial.x + dx
+        } else {
+          nextW = MIN_W
+          nextX = initial.x + (initial.width - MIN_W)
+        }
+      }
+      if (dir.includes('n')) {
+        const candidateH = initial.height - dy
+        if (candidateH >= MIN_H) {
+          nextH = candidateH
+          nextY = initial.y + dy
+        } else {
+          nextH = MIN_H
+          nextY = initial.y + (initial.height - MIN_H)
+        }
+      }
+
+      setWinBounds({ width: nextW, height: nextH })
+      window.chatApi?.setBounds({ x: nextX, y: nextY, width: nextW, height: nextH })
+    }
+
+    const onMouseUp = () => {
+      setIsResizing(false)
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }
+
+  const handleToggleZoomSize = async () => {
+    setIsCompact(false)
+    const cur = (await window.chatApi?.getBounds()) || {
+      x: 0,
+      y: 0,
+      width: winBounds.width,
+      height: winBounds.height,
+    }
+    if (cur.width >= 860 && cur.height >= 680 && preZoomSizeRef.current) {
+      const prev = preZoomSizeRef.current
+      preZoomSizeRef.current = null
+      await window.chatApi?.setBounds({ width: prev.width, height: prev.height })
+    } else {
+      preZoomSizeRef.current = { width: cur.width, height: cur.height }
+      await window.chatApi?.setBounds({ width: 920, height: 720 })
+    }
+  }
+
   return (
-    <div className="w-screen h-screen p-2 flex flex-col select-none overflow-hidden">
+    <div className="relative w-screen h-screen p-2 flex flex-col select-none overflow-hidden">
+      {/* 8-Direction Invisible Mouse Resize Handles Around Terminal Edges & Corners */}
+      <div
+        onMouseDown={(e) => startWindowResize('n', e)}
+        className="no-drag fixed top-0 left-3 right-3 h-2 cursor-ns-resize z-50"
+      />
+      <div
+        onMouseDown={(e) => startWindowResize('s', e)}
+        className="no-drag fixed bottom-0 left-3 right-3 h-2 cursor-ns-resize z-50"
+      />
+      <div
+        onMouseDown={(e) => startWindowResize('w', e)}
+        className="no-drag fixed left-0 top-3 bottom-3 w-2 cursor-ew-resize z-50"
+      />
+      <div
+        onMouseDown={(e) => startWindowResize('e', e)}
+        className="no-drag fixed right-0 top-3 bottom-3 w-2 cursor-ew-resize z-50"
+      />
+      <div
+        onMouseDown={(e) => startWindowResize('nw', e)}
+        className="no-drag fixed top-0 left-0 w-3.5 h-3.5 cursor-nwse-resize z-50"
+      />
+      <div
+        onMouseDown={(e) => startWindowResize('ne', e)}
+        className="no-drag fixed top-0 right-0 w-3.5 h-3.5 cursor-nesw-resize z-50"
+      />
+      <div
+        onMouseDown={(e) => startWindowResize('sw', e)}
+        className="no-drag fixed bottom-0 left-0 w-3.5 h-3.5 cursor-nesw-resize z-50"
+      />
+      <div
+        onMouseDown={(e) => startWindowResize('se', e)}
+        title="按住拖拽调整终端窗口大小"
+        className="no-drag fixed bottom-0 right-0 w-5 h-5 cursor-nwse-resize z-50 flex items-end justify-end pr-2.5 pb-2.5 group"
+      >
+        <svg
+          viewBox="0 0 10 10"
+          className="w-2.5 h-2.5 text-slate-400/50 group-hover:text-sky-400 transition-colors pointer-events-none"
+        >
+          <path
+            d="M9 1L1 9M9 5L5 9M9 8.5L8.5 9"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+          />
+        </svg>
+      </div>
+
       {combinedChatCss && <style id="muse-custom-plugins-css">{combinedChatCss}</style>}
       <div
         style={{ '--terminal-alpha': appearance.opacity / 100 } as React.CSSProperties}
         className={`liquid-glass-terminal liquid-glass-shell w-full ${
           isCompact ? 'h-[430px]' : 'h-full'
-        } flex flex-col text-slate-100 overflow-hidden transition-all duration-300`}
+        } flex flex-col text-slate-100 overflow-hidden ${
+          isResizing ? '' : 'transition-all duration-300'
+        }`}
       >
         {/* macOS Terminal Titlebar (Draggable) */}
-        <div className="draggable liquid-glass-header flex items-center justify-between px-4 py-2.5 select-none">
+        <div
+          onDoubleClick={handleToggleZoomSize}
+          className="draggable liquid-glass-header flex items-center justify-between px-4 py-2.5 select-none"
+        >
           {/* Left: macOS Traffic Lights */}
           <div className="no-drag flex items-center gap-2 group">
             <button
@@ -745,8 +904,8 @@ export default function ChatApp() {
               <span className="opacity-0 group-hover:opacity-100 leading-none">−</span>
             </button>
             <button
-              onClick={() => setIsCompact((v) => !v)}
-              title="切换紧凑/标准终端尺寸"
+              onClick={handleToggleZoomSize}
+              title="放大/还原终端窗口尺寸 (或拖拽窗口四周边缘自由缩放)"
               className="w-3 h-3 rounded-full bg-[#27c93f] border border-black/15 shadow-inner flex items-center justify-center text-[9px] font-bold text-black/75 hover:brightness-110 transition-all"
             >
               <span className="opacity-0 group-hover:opacity-100 leading-none">+</span>
@@ -886,6 +1045,16 @@ export default function ChatApp() {
                   className="flex-1 accent-sky-400 cursor-pointer h-1.5 bg-white/15 rounded-lg"
                 />
                 <span>纯黑 100%</span>
+              </div>
+              <div className="flex items-center justify-between pt-1.5 font-terminal text-[11px] text-slate-400">
+                <span>当前终端尺寸: {winBounds.width} × {winBounds.height} px (鼠标拖四边/右下角缩放)</span>
+                <button
+                  type="button"
+                  onClick={() => window.chatApi?.resetBounds()}
+                  className="text-sky-300 hover:text-sky-200 underline"
+                >
+                  重置默认尺寸 (640×560)
+                </button>
               </div>
             </div>
 
@@ -1761,13 +1930,16 @@ export default function ChatApp() {
           </div>
 
           {/* Bottom Status Bar */}
-          <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-white/10 font-terminal text-[10.5px] text-slate-300/65">
+          <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-white/10 font-terminal text-[10.5px] text-slate-300/65 pr-3">
             <div className="flex items-center gap-3">
               <span>⌥ Space 唤起/隐藏</span>
               <span>Esc 收起</span>
               <span>↑/↓ 历史命令</span>
+              <span>鼠标拖边缘缩放</span>
             </div>
-            <span>muse.ai · liquid-glass tty</span>
+            <span>
+              {winBounds.width}×{winBounds.height} · liquid-glass tty
+            </span>
           </div>
         </div>
 

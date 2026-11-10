@@ -952,6 +952,19 @@ export function registerIpcHandlers(
     return await proxyManager.testConnection()
   })
 
+  // Chat Window Resizing & Bounds Control
+  ipcMain.handle('chat:get-bounds', () => {
+    return windowManager.getChatBounds()
+  })
+
+  ipcMain.handle('chat:set-bounds', (_event, bounds: Partial<{ x: number; y: number; width: number; height: number }>) => {
+    return windowManager.setChatBounds(bounds)
+  })
+
+  ipcMain.handle('chat:reset-bounds', () => {
+    return windowManager.resetChatBounds()
+  })
+
   // App quit
   ipcMain.on('app:quit', () => {
     app.quit()

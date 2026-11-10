@@ -1,7 +1,7 @@
 import { BrowserWindow, screen, app, session } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
-import type { AvatarState } from '../types'
+import type { AvatarState, WindowBounds } from '../types'
 import { MUSE_PARTITION } from './muse-client'
 
 export class WindowManager {
@@ -10,9 +10,32 @@ export class WindowManager {
   private authWindow: BrowserWindow | null = null
   private currentAvatarState: AvatarState = 'idle'
   private stateFilePath: string
+  private chatBoundsFilePath: string
+  private hasCustomChatPosition = false
 
   constructor() {
     this.stateFilePath = path.join(app.getPath('userData'), 'pet_position.json')
+    this.chatBoundsFilePath = path.join(app.getPath('userData'), 'chat_bounds.json')
+  }
+
+  private loadSavedChatBounds(): Partial<WindowBounds> | null {
+    try {
+      if (fs.existsSync(this.chatBoundsFilePath)) {
+        const raw = fs.readFileSync(this.chatBoundsFilePath, 'utf-8')
+        return JSON.parse(raw)
+      }
+    } catch {
+      // ignore
+    }
+    return null
+  }
+
+  private saveChatBounds(bounds: WindowBounds) {
+    try {
+      fs.writeFileSync(this.chatBoundsFilePath, JSON.stringify(bounds))
+    } catch {
+      // ignore
+    }
   }
 
   private loadSavedPosition(): { x: number; y: number } | null {
@@ -125,16 +148,26 @@ export class WindowManager {
     }
 
     const chatPreload = path.join(__dirname, '../preload/chat.js')
+    const savedBounds = this.loadSavedChatBounds()
+    const primaryDisplay = screen.getPrimaryDisplay()
+    const { width: screenW, height: screenH } = primaryDisplay.workAreaSize
+
+    const initW = Math.min(screenW - 24, Math.max(460, savedBounds?.width || 640))
+    const initH = Math.min(screenH - 24, Math.max(380, savedBounds?.height || 560))
 
     this.chatWindow = new BrowserWindow({
-      width: 640,
-      height: 560,
+      width: initW,
+      height: initH,
+      minWidth: 460,
+      minHeight: 380,
+      maxWidth: screenW,
+      maxHeight: screenH,
       transparent: true,
       frame: false,
       alwaysOnTop: true,
       show: false,
       skipTaskbar: false,
-      resizable: false,
+      resizable: true,
       hasShadow: false,
       webPreferences: {
         preload: chatPreload,
@@ -143,6 +176,33 @@ export class WindowManager {
         sandbox: true,
         webSecurity: false,
       },
+    })
+
+    if (
+      savedBounds &&
+      typeof savedBounds.x === 'number' &&
+      typeof savedBounds.y === 'number' &&
+      savedBounds.x >= -100 &&
+      savedBounds.x < screenW - 80 &&
+      savedBounds.y >= 0 &&
+      savedBounds.y < screenH - 80
+    ) {
+      this.chatWindow.setPosition(savedBounds.x, savedBounds.y)
+      this.hasCustomChatPosition = true
+    }
+
+    const notifyBoundsChanged = () => {
+      if (this.chatWindow && !this.chatWindow.isDestroyed()) {
+        const b = this.chatWindow.getBounds()
+        this.saveChatBounds(b)
+        this.chatWindow.webContents.send('chat:bounds-changed', b)
+      }
+    }
+
+    this.chatWindow.on('resized', notifyBoundsChanged)
+    this.chatWindow.on('moved', () => {
+      this.hasCustomChatPosition = true
+      notifyBoundsChanged()
     })
 
     if (process.env.VITE_DEV_SERVER_URL) {
@@ -175,13 +235,63 @@ export class WindowManager {
         this.setAvatarState('idle')
       }
     } else {
-      this.positionChatNearPet()
+      if (!this.hasCustomChatPosition) {
+        this.positionChatNearPet()
+      }
       this.chatWindow.show()
       this.chatWindow.focus()
       if (this.currentAvatarState === 'idle') {
         this.setAvatarState('listening')
       }
     }
+  }
+
+  public getChatBounds(): WindowBounds {
+    if (!this.chatWindow || this.chatWindow.isDestroyed()) {
+      return { x: 0, y: 0, width: 640, height: 560 }
+    }
+    return this.chatWindow.getBounds()
+  }
+
+  public setChatBounds(partial: Partial<WindowBounds>): WindowBounds {
+    if (!this.chatWindow || this.chatWindow.isDestroyed()) {
+      return { x: 0, y: 0, width: 640, height: 560 }
+    }
+    const primaryDisplay = screen.getPrimaryDisplay()
+    const { width: screenW, height: screenH } = primaryDisplay.workAreaSize
+    const cur = this.chatWindow.getBounds()
+    const next: WindowBounds = {
+      x: typeof partial.x === 'number' ? Math.round(partial.x) : cur.x,
+      y: typeof partial.y === 'number' ? Math.round(partial.y) : cur.y,
+      width:
+        typeof partial.width === 'number'
+          ? Math.min(screenW, Math.max(460, Math.round(partial.width)))
+          : cur.width,
+      height:
+        typeof partial.height === 'number'
+          ? Math.min(screenH, Math.max(380, Math.round(partial.height)))
+          : cur.height,
+    }
+    if (typeof partial.x === 'number' || typeof partial.y === 'number') {
+      this.hasCustomChatPosition = true
+    }
+    this.chatWindow.setBounds(next)
+    this.saveChatBounds(next)
+    this.chatWindow.webContents.send('chat:bounds-changed', next)
+    return next
+  }
+
+  public resetChatBounds(): WindowBounds {
+    if (!this.chatWindow || this.chatWindow.isDestroyed()) {
+      return { x: 0, y: 0, width: 640, height: 560 }
+    }
+    this.hasCustomChatPosition = false
+    this.chatWindow.setSize(640, 560)
+    this.positionChatNearPet()
+    const b = this.chatWindow.getBounds()
+    this.saveChatBounds(b)
+    this.chatWindow.webContents.send('chat:bounds-changed', b)
+    return b
   }
 
   public hideChatWindow() {
