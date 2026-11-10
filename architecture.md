@@ -43,7 +43,7 @@ parent: muse-pet-goal
 ## Decisions
 
 ### 1. 多窗口隔离模型 (Pet Window + Chat Window + Auth Window)
-- **Pet Window**：尺寸为 `280 × 320`，设置 `transparent: true`, `frame: false`, `alwaysOnTop: true`, `skipTaskbar: true`，默认开启 `setIgnoreMouseEvents(true, { forward: true })` 鼠标穿透转发。渲染层通过实时抠图掩码（`bgMaskRef`）与气泡/挂件几何边界进行 **像素级 Alpha 命中检测**：只有当鼠标悬停在人物不透明轮廓像素、活动冒泡气泡或挂件上时才捕获鼠标事件（支持按住人物轮廓拖拽移动位置或单击呼出终端），人物四周的透明背景与上方空白区完全穿透到底层桌面窗口，绝不遮挡周围点击。
+- **Pet Window**：尺寸为 `300 × 420`（内部角色画布展示区 `224 × 224` 锁定 `shrink-0` 防止被顶部气泡或插件挂件挤压裁切），设置 `transparent: true`, `frame: false`, `alwaysOnTop: true`, `skipTaskbar: true`，默认开启 `setIgnoreMouseEvents(true, { forward: true })` 鼠标穿透转发。渲染层通过实时抠图掩码（`bgMaskRef`）与气泡/挂件/模式切换胶囊几何边界进行 **像素级 Alpha 命中检测**：只有当鼠标悬停在人物不透明轮廓像素、活动冒泡气泡、模式切换按钮或挂件上时才捕获鼠标事件（支持按住人物轮廓拖拽移动位置或单击呼出终端），人物四周的透明背景与上方空白区完全穿透到底层桌面窗口，绝不遮挡周围点击。
 - **Chat Window (Spotlight / Liquid Glass Terminal HUD)**：宽幅独立窗口（默认 `640 × 560`，最小 `460 × 380`），默认隐藏。支持通过鼠标拖拽窗口四边、四角及右下角斜纹手柄 8 方向自由缩放大小（或点击左上角绿灯 `+` / 双击标题栏一键放大/还原），并将调整后的宽高与坐标自动持久化在 `userData/chat_bounds.json`。全局快捷键（`Alt + Space`）或点击桌面宠物触发显隐，首次在主屏幕中上方黄金视觉位（水平居中、距顶约 16%）弹出。默认采用 **100% 不透明曜石纯黑（Obsidian Solid）** 基底搭配 Apple Liquid Glass 顶部高光折射边（避免底层桌面干扰阅读），并支持在 `/settings`（或通过 `/solid`、`/glass`、`/theme` 命令与不透明度滑块 `45%~100%`）自由切换并持久化窗口材质与透明度。支持 `Esc` 键一键收起、macOS 红黄绿交通灯控制、`luna ❯` 终端提示符、`/sync` 云端历史同步与 `↑`/`↓` 历史命令回溯。
 - **Auth Window**：独立的临时 Webview 窗口，仅在用户首次登录或凭证过期时调出，加载 `https://muse.ai`。统一伪装标准 Chrome User-Agent 规避反爬，监听 `session.fromPartition('persist:meta_muse').webRequest.onCompleted`，自动提取 Meta 核心认证 Cookie，保存后立即自毁；若加载失败注入带一键重试的故障排查诊断页。
 - **Proxy Manager**：统一代理调度体系，应用启动时默认激活 Windows 系统代理（`mode: 'system'`），支持自定义 fixed_servers 代理规则并提供实时测速与手动 Cookie 录入兜底。
@@ -57,7 +57,9 @@ parent: muse-pet-goal
 ### 3. Meta Avatar 状态驱动与本地缓存机制
 - 建立状态机：`IDLE`（待机呼吸）、`LISTENING`（面板打开等待输入）、`THINKING`（正在向 Muse 请求）、`TALKING`（正在流式接收文本并合成口型/动作）、`ERROR`（异常或断网提示）。
 - **多状态视频提取、持久化缓存与实时换装热更新**：`MuseClient` 从隐藏 `museWindow` 排除聊天消息内部后的主舞台 `video[data-hatch-avatar-layer]` 及其 React Fiber 状态中提取用户的专属虚拟形象高清静态图（WebP）与多状态 720p 循环视频（`default`、`working`、`resume`）及智能体名称（如 `Luna`），持久化缓存至 `userData/avatar_cache/` 并记录资产签名 `avatarSignature`。后台轮询与对话结束时自动比对主舞台 `avatarSignature`，一旦检测到用户在 `muse.ai` 更换服装或形象，立即触发强制重新提取并通过 `avatar:assets-updated` 与 `auth:status-changed` 实时热更新桌面宠物与终端头像。
-- **双窗口同步呈现与透明人物抠图**：`PetWindow` 采用隐藏多状态 `<video>` + 30fps `<canvas>` 实时四边界连通域洪水填充（Edge-Connected Flood Fill）与边缘反算去白边（Color Unmixing），将视频中的纯白背景完全抠除为透明（`alpha = 0`）同时完整保留人物眼白与高光细节，以无外框的纯人物立绘悬浮展示；`ChatWindow` 同步使用提取到的静态头像与智能体名称替换标题栏与消息列表图标。
+- **双窗口同步呈现、透明人物抠图与三模全身/动态景别切换**：
+  - 由于 `muse.ai` 的 `avatar.webp`（`1600 × 1600`）是从头到脚的完整全身立绘，而 `default.mp4`/`working.mp4`/`resume.mp4`（`720 × 720`）为腰部以上的半身循环视频，`PetWindow` 支持三种持久化展示模式（`smart` 智能联动：待机时展示完整全身立绘、思考/说话时自动切换半身动态视频；`full` 常驻全身立绘；`video` 常驻半身动态视频），可在桌宠头顶悬停胶囊或终端 `/settings` 面板一键切换。
+  - `PetWindow` 采用 `400 × 400` 离屏长宽比自适应内缩留白（`CANVAS_PAD = 10`）与 30fps `<canvas>` 实时四边界连通域洪水填充（`min >= 242 && max - min <= 12` 紧缩白底阈值）加边缘反算去白边（Color Unmixing），将纯白摄影棚背景完全抠除为透明（`alpha = 0`）同时完整保留人物眼白、高光与浅色衣摆，头顶至鞋底零裁切悬浮展示；`ChatWindow` 同步对小尺寸圆形头像采用 `object-cover object-[50%_10%]` 面部聚焦对齐（支持点击放大预览 1600px 全身图），并在 `/settings` 中使用 `object-contain` 展示完整全身立绘。
 
 ### 4. 本地工具桥与电脑小秘书系统 (Local Secretary Agent Bridge)
 - **前置意图协同与多模态桥接 (`src/main/local-secretary.ts`)**：

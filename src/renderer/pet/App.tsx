@@ -1,13 +1,43 @@
 import React, { useEffect, useRef, useState } from 'react'
-import type { AvatarAssets, AvatarState, MusePlugin, PetBubblePayload } from '../../types'
+import type {
+  AvatarAssets,
+  AvatarState,
+  MusePlugin,
+  PetBubblePayload,
+  PetDisplayMode,
+} from '../../types'
 import { Sparkles, MessageCircle, AlertCircle, RefreshCw, X, Bell } from 'lucide-react'
 
-const CUTOUT_SIZE = 360
+const CUTOUT_SIZE = 400
+const CANVAS_PAD = 10
+
+/**
+ * Draw media onto the cutout canvas with white studio background and aspect-preserving
+ * safety padding so top/bottom/side edges of the character are never clipped.
+ */
+function drawMediaContained(
+  ctx: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  srcW: number,
+  srcH: number,
+  size: number,
+  pad: number
+) {
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, size, size)
+  const avail = size - pad * 2
+  const scale = Math.min(avail / srcW, avail / srcH)
+  const dw = Math.round(srcW * scale)
+  const dh = Math.round(srcH * scale)
+  const dx = Math.round((size - dw) / 2)
+  const dy = Math.round((size - dh) / 2)
+  ctx.drawImage(source, dx, dy, dw, dh)
+}
 
 /**
  * Remove the solid white studio background connected to the frame borders
- * while preserving interior whites (eyes, teeth, highlights) and de-spilling
- * white halo on the character's anti-aliased edge pixels.
+ * while preserving interior whites (eyes, teeth, highlights, light clothing)
+ * and de-spilling white halo on the character's anti-aliased edge pixels.
  */
 function removeConnectedWhiteBackground(
   ctx: CanvasRenderingContext2D,
@@ -31,8 +61,8 @@ function removeConnectedWhiteBackground(
     const b = data[p + 2]
     const min = r < g ? (r < b ? r : b) : g < b ? g : b
     const max = r > g ? (r > b ? r : b) : g > b ? g : b
-    // Pure or near-white neutral background
-    return min >= 234 && max - min <= 18
+    // Pure or near-white neutral studio background (tight threshold to protect light outfits)
+    return min >= 242 && max - min <= 12
   }
 
   // Seed flood-fill from all 4 borders
@@ -151,6 +181,7 @@ function removeConnectedWhiteBackground(
 export default function PetApp() {
   const [avatarState, setAvatarState] = useState<AvatarState>('idle')
   const [avatarAssets, setAvatarAssets] = useState<AvatarAssets | null>(null)
+  const [displayMode, setDisplayMode] = useState<PetDisplayMode>('smart')
   const [bubble, setBubble] = useState<PetBubblePayload | null>(null)
   const [plugins, setPlugins] = useState<MusePlugin[]>([])
   const [isBubbleHovered, setIsBubbleHovered] = useState(false)
@@ -159,6 +190,7 @@ export default function PetApp() {
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const bubbleBoxRef = useRef<HTMLDivElement | null>(null)
+  const modePillRef = useRef<HTMLButtonElement | null>(null)
   const petInteractiveRef = useRef<HTMLDivElement | null>(null)
   const petPluginDockRef = useRef<HTMLDivElement | null>(null)
   const defaultVideoRef = useRef<HTMLVideoElement | null>(null)
@@ -166,6 +198,8 @@ export default function PetApp() {
   const resumeVideoRef = useRef<HTMLVideoElement | null>(null)
   const staticImgRef = useRef<HTMLImageElement | null>(null)
   const activeVariantRef = useRef<'default' | 'working' | 'resume'>('default')
+  const avatarStateRef = useRef<AvatarState>('idle')
+  const displayModeRef = useRef<PetDisplayMode>('smart')
   // 0 = character foreground pixel, 1 = transparent background pixel
   const bgMaskRef = useRef<Uint8Array | null>(null)
   const hasCutoutFrameRef = useRef(false)
@@ -181,7 +215,12 @@ export default function PetApp() {
 
   useEffect(() => {
     activeVariantRef.current = activeVideoVariant
-  }, [activeVideoVariant])
+    avatarStateRef.current = avatarState
+  }, [activeVideoVariant, avatarState])
+
+  useEffect(() => {
+    displayModeRef.current = displayMode
+  }, [displayMode])
 
   // Natural blinking effect for fallback orb
   useEffect(() => {
@@ -212,6 +251,11 @@ export default function PetApp() {
     window.petApi?.getPlugins?.().then((list) => {
       if (Array.isArray(list)) setPlugins(list)
     })
+    window.petApi?.getDisplayMode?.().then((mode) => {
+      if (mode === 'full' || mode === 'video' || mode === 'smart') {
+        setDisplayMode(mode)
+      }
+    })
 
     const unsubscribeState = window.petApi?.onSyncAvatarState((newState) => {
       setAvatarState(newState)
@@ -225,12 +269,18 @@ export default function PetApp() {
     const unsubscribePlugins = window.petApi?.onPluginsUpdated?.((list) => {
       if (Array.isArray(list)) setPlugins(list)
     })
+    const unsubscribeMode = window.petApi?.onDisplayModeUpdated?.((mode) => {
+      if (mode === 'full' || mode === 'video' || mode === 'smart') {
+        setDisplayMode(mode)
+      }
+    })
 
     return () => {
       unsubscribeState?.()
       unsubscribeAssets?.()
       unsubscribeBubble?.()
       unsubscribePlugins?.()
+      unsubscribeMode?.()
     }
   }, [])
 
@@ -304,6 +354,12 @@ export default function PetApp() {
       // Cap at ~30 FPS for low GPU/CPU usage
       if (now - lastDrawTime >= 30) {
         const variant = activeVariantRef.current
+        const curState = avatarStateRef.current
+        const mode = displayModeRef.current
+        const preferFullBody =
+          mode === 'full' ||
+          (mode === 'smart' && curState !== 'thinking' && curState !== 'talking')
+
         const chosenVideo =
           variant === 'working'
             ? workingVideoRef.current || defaultVideoRef.current
@@ -312,25 +368,58 @@ export default function PetApp() {
             : defaultVideoRef.current
 
         let drawn = false
-        if (chosenVideo && chosenVideo.readyState >= 2 && chosenVideo.videoWidth > 0) {
-          ctx.clearRect(0, 0, CUTOUT_SIZE, CUTOUT_SIZE)
-          ctx.drawImage(chosenVideo, 0, 0, CUTOUT_SIZE, CUTOUT_SIZE)
+        if (
+          preferFullBody &&
+          staticImgRef.current &&
+          staticImgRef.current.complete &&
+          staticImgRef.current.naturalWidth > 0
+        ) {
+          drawMediaContained(
+            ctx,
+            staticImgRef.current,
+            staticImgRef.current.naturalWidth,
+            staticImgRef.current.naturalHeight,
+            CUTOUT_SIZE,
+            CANVAS_PAD
+          )
+          drawn = true
+        } else if (chosenVideo && chosenVideo.readyState >= 2 && chosenVideo.videoWidth > 0) {
+          drawMediaContained(
+            ctx,
+            chosenVideo,
+            chosenVideo.videoWidth,
+            chosenVideo.videoHeight,
+            CUTOUT_SIZE,
+            CANVAS_PAD
+          )
           drawn = true
         } else if (
           defaultVideoRef.current &&
           defaultVideoRef.current.readyState >= 2 &&
           defaultVideoRef.current.videoWidth > 0
         ) {
-          ctx.clearRect(0, 0, CUTOUT_SIZE, CUTOUT_SIZE)
-          ctx.drawImage(defaultVideoRef.current, 0, 0, CUTOUT_SIZE, CUTOUT_SIZE)
+          drawMediaContained(
+            ctx,
+            defaultVideoRef.current,
+            defaultVideoRef.current.videoWidth,
+            defaultVideoRef.current.videoHeight,
+            CUTOUT_SIZE,
+            CANVAS_PAD
+          )
           drawn = true
         } else if (
           staticImgRef.current &&
           staticImgRef.current.complete &&
           staticImgRef.current.naturalWidth > 0
         ) {
-          ctx.clearRect(0, 0, CUTOUT_SIZE, CUTOUT_SIZE)
-          ctx.drawImage(staticImgRef.current, 0, 0, CUTOUT_SIZE, CUTOUT_SIZE)
+          drawMediaContained(
+            ctx,
+            staticImgRef.current,
+            staticImgRef.current.naturalWidth,
+            staticImgRef.current.naturalHeight,
+            CUTOUT_SIZE,
+            CANVAS_PAD
+          )
           drawn = true
         }
 
@@ -387,6 +476,14 @@ export default function PetApp() {
           if (rect.width > 0 && rect.height > 0 && isPointInRect(clientX, clientY, rect, 2)) {
             return { hit: true, onPet: false }
           }
+        }
+      }
+
+      // 2.5 Mode toggle pill hit test (when visible on hover)
+      if (modePillRef.current) {
+        const rect = modePillRef.current.getBoundingClientRect()
+        if (rect.width > 0 && rect.height > 0 && isPointInRect(clientX, clientY, rect, 4)) {
+          return { hit: true, onPet: true }
         }
       }
 
@@ -679,7 +776,7 @@ export default function PetApp() {
       <div
         ref={petInteractiveRef}
         onMouseDown={handlePetMouseDown}
-        className={`no-drag relative group cursor-grab active:cursor-grabbing transition-all duration-300 transform ${
+        className={`no-drag shrink-0 relative group cursor-grab active:cursor-grabbing transition-all duration-300 transform ${
           avatarState === 'idle' ? 'animate-breathe' : ''
         } ${avatarState === 'talking' ? 'animate-bounce-subtle' : ''}`}
       >
@@ -691,13 +788,37 @@ export default function PetApp() {
         )}
         {hasMuseAvatar ? (
           /* Pure transparent character cutout without any circular background plate */
-          <div className="relative w-44 h-44 flex items-center justify-center">
+          <div className="relative w-56 h-56 shrink-0 flex items-center justify-center">
             <canvas
               ref={canvasRef}
               width={CUTOUT_SIZE}
               height={CUTOUT_SIZE}
-              className={`w-44 h-44 object-contain pointer-events-none transition-all duration-300 ${getCharacterDropShadow()}`}
+              className={`w-56 h-56 shrink-0 object-contain pointer-events-none transition-all duration-300 ${getCharacterDropShadow()}`}
             />
+
+            {/* Quick Display Mode Switcher Pill on Hover (全身立绘 / 智能联动 / 动态视频) */}
+            <button
+              ref={modePillRef}
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                const order: PetDisplayMode[] = ['smart', 'full', 'video']
+                const next = order[(order.indexOf(displayMode) + 1) % order.length]
+                setDisplayMode(next)
+                window.petApi?.setDisplayMode?.(next)
+              }}
+              title="切换桌宠形象展示模式：智能全身 / 常驻全身 / 动态视频"
+              className={`no-drag absolute top-1 left-1/2 -translate-x-1/2 z-30 px-2 py-0.5 rounded-full bg-slate-950/90 hover:bg-slate-900 text-[10px] font-terminal text-sky-200 border border-sky-400/35 shadow-md transition-all duration-200 ${
+                isHovered ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1 pointer-events-none'
+              }`}
+            >
+              {displayMode === 'smart'
+                ? '✨ 全身·智能联动'
+                : displayMode === 'full'
+                ? '🧍 全身立绘'
+                : '🎬 半身动态'}
+            </button>
 
             {/* Floating minimal state indicator only when active (thinking / talking / error) */}
             {avatarState !== 'idle' && (

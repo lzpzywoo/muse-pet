@@ -85,10 +85,10 @@ export class WindowManager {
     const primaryDisplay = screen.getPrimaryDisplay()
     const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize
 
-    const windowWidth = 280
-    const windowHeight = 320
+    const windowWidth = 300
+    const windowHeight = 420
     const defaultX = screenWidth - windowWidth - 20
-    const defaultY = screenHeight - windowHeight - 40
+    const defaultY = screenHeight - windowHeight - 20
 
     const savedPos = this.loadSavedPosition()
     let initialX = defaultX

@@ -154,6 +154,9 @@ const chatApi: ChatApi = {
   resetAllPlugins: () => {
     return ipcRenderer.invoke('secretary:reset-plugins')
   },
+  setPetDisplayMode: (mode) => {
+    return ipcRenderer.invoke('secretary:set-pet-display-mode', mode)
+  },
 }
 
 contextBridge.exposeInMainWorld('chatApi', chatApi)

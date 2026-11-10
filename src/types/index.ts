@@ -1,5 +1,7 @@
 export type AvatarState = 'idle' | 'listening' | 'thinking' | 'talking' | 'error'
 
+export type PetDisplayMode = 'smart' | 'full' | 'video'
+
 export interface AvatarAssets {
   agentName?: string
   staticImageUrl?: string
@@ -76,6 +78,7 @@ export interface SecretaryState {
   todos: SecretaryTodoItem[]
   workflows: Record<WorkflowMacroId, WorkflowMacroConfig>
   plugins: MusePlugin[]
+  petDisplayMode?: PetDisplayMode
   lastBriefDate?: string
 }
 
@@ -120,6 +123,9 @@ export interface PetApi {
   getAvatarState: () => Promise<AvatarState>
   getPlugins: () => Promise<MusePlugin[]>
   onPluginsUpdated: (callback: (plugins: MusePlugin[]) => void) => () => void
+  getDisplayMode: () => Promise<PetDisplayMode>
+  setDisplayMode: (mode: PetDisplayMode) => Promise<PetDisplayMode>
+  onDisplayModeUpdated: (callback: (mode: PetDisplayMode) => void) => () => void
 }
 
 export type ProxyMode = 'system' | 'custom' | 'direct'
@@ -194,6 +200,7 @@ export interface ChatApi {
   togglePlugin: (id: string) => Promise<SecretaryState>
   removePlugin: (id: string) => Promise<SecretaryState>
   resetAllPlugins: () => Promise<SecretaryState>
+  setPetDisplayMode: (mode: PetDisplayMode) => Promise<SecretaryState>
 }
 
 declare global {
