@@ -14,11 +14,12 @@
  * reimplementing the Noise protocol.
  */
 import { app, BrowserWindow, session } from 'electron'
+import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import { pathToFileURL } from 'url'
 import { SessionStore } from './session-store'
-import type { AvatarAssets, ChatMessage, UserProfile } from '../types'
+import type { AvatarAssets, ChatAttachment, ChatMessage, UserProfile } from '../types'
 
 /** Shared partition for the hidden muse.ai browser window */
 export const MUSE_PARTITION = 'persist:meta_muse'
@@ -44,14 +45,57 @@ export class MuseClient {
   private aborted = false
   private activeRunId = 0
   private avatarSyncing = false
+  private lastAvatarSignature: string | null = null
   private onAvatarSyncedCallbacks: Array<(assets: AvatarAssets) => void> = []
   private onCloudMessagesCallbacks: Array<(messages: ChatMessage[], newAssistantMessage?: ChatMessage) => void> = []
   private lastSeenAssistantId: string | null = null
+  private lastCloudDigest: string = ''
   private cloudWatchTimer: NodeJS.Timeout | null = null
   private isSendingChat = false
 
   constructor(sessionStore: SessionStore) {
     this.sessionStore = sessionStore
+  }
+
+  private getMediaCacheDir(): string {
+    const dir = path.join(app.getPath('userData'), 'media_cache')
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true })
+    }
+    return dir
+  }
+
+  private persistMediaAttachment(
+    rawUrl: string,
+    type: 'image' | 'video',
+    title?: string
+  ): ChatAttachment | null {
+    if (!rawUrl) return null
+    try {
+      if (rawUrl.startsWith('data:')) {
+        const commaIdx = rawUrl.indexOf(',')
+        if (commaIdx < 0) return null
+        const header = rawUrl.slice(0, commaIdx)
+        const b64 = rawUrl.slice(commaIdx + 1)
+        const hash = crypto.createHash('sha1').update(b64.slice(0, 4096) + b64.length).digest('hex').slice(0, 16)
+        let ext = type === 'video' ? 'mp4' : 'webp'
+        if (header.includes('image/png')) ext = 'png'
+        else if (header.includes('image/jpeg')) ext = 'jpg'
+        else if (header.includes('image/gif')) ext = 'gif'
+        const filePath = path.join(this.getMediaCacheDir(), `${hash}.${ext}`)
+        if (!fs.existsSync(filePath)) {
+          fs.writeFileSync(filePath, Buffer.from(b64, 'base64'))
+        }
+        return {
+          type,
+          url: type === 'image' ? rawUrl : pathToFileURL(filePath).href,
+          title,
+        }
+      }
+      return { type, url: rawUrl, title }
+    } catch {
+      return { type, url: rawUrl, title }
+    }
   }
 
   public onAvatarSynced(cb: (assets: AvatarAssets) => void) {
@@ -77,35 +121,170 @@ export class MuseClient {
     if (!cookies) return []
     try {
       const win = await this.ensureMuseWindow(cookies)
-      const items: Array<{ id: string; role: 'user' | 'assistant'; content: string }> =
-        await win.webContents.executeJavaScript(`
-        (function() {
+      const payload: {
+        items: Array<{
+          id: string
+          role: 'user' | 'assistant'
+          content: string
+          attachments: Array<{ type: 'image' | 'video'; dataUrl: string; title?: string }>
+        }>
+        avatarSignature: string | null
+      } = await win.webContents.executeJavaScript(`
+        (async function() {
+          window.__museMediaCache = window.__museMediaCache || {}
+          const blobToDataUrl = async (url) => {
+            if (!url) return null
+            if (window.__museMediaCache[url]) return window.__museMediaCache[url]
+            if (!url.startsWith('blob:')) return url
+            try {
+              const res = await fetch(url)
+              const blob = await res.blob()
+              const dataUrl = await new Promise((resolve) => {
+                const reader = new FileReader()
+                reader.onloadend = () => resolve(reader.result)
+                reader.onerror = () => resolve(null)
+                reader.readAsDataURL(blob)
+              })
+              if (dataUrl) window.__museMediaCache[url] = dataUrl
+              return dataUrl
+            } catch {
+              return null
+            }
+          }
+
           const nodes = Array.from(document.querySelectorAll('[data-message-item="true"]'))
           const clean = (el) => {
             const raw = (el.innerText || '').trim()
-            return raw.replace(/^(Copy|Copied|Edit|Retry)\\s+/i, '').trim()
+            return raw
+              .replace(/^(Copy|Copied|Edit|Retry)\\s+/i, '')
+              .replace(/^(你：|Muse：|助手消息：|Assistant message:|User message:)\\s*/i, '')
+              .replace(/\\n*(分享头像|Share avatar)\\s*$/i, '')
+              .replace(/\\n*👍\\s*$/i, '')
+              .trim()
           }
-          return nodes
-            .map((el, idx) => {
-              const id = el.getAttribute('data-message-id') || ('cloud-' + idx)
-              const role = el.getAttribute('data-message-role') === 'user' ? 'user' : 'assistant'
-              const content = clean(el)
-              return { id, role, content }
-            })
-            .filter(m => m.content.length > 0)
+
+          const items = []
+          for (let idx = 0; idx < nodes.length; idx++) {
+            const el = nodes[idx]
+            const id = el.getAttribute('data-message-id') || ('cloud-' + idx)
+            const role = el.getAttribute('data-message-role') === 'user' ? 'user' : 'assistant'
+            const content = clean(el)
+            const attachments = []
+
+            const imgs = Array.from(el.querySelectorAll('img'))
+            for (const img of imgs) {
+              const src = img.currentSrc || img.src
+              if (!src) continue
+              const btn = img.closest('button')
+              const title = btn?.getAttribute('title') || img.alt || undefined
+              const dataUrl = await blobToDataUrl(src)
+              if (dataUrl) {
+                attachments.push({ type: 'image', dataUrl, title })
+              }
+            }
+
+            const vids = Array.from(el.querySelectorAll('video'))
+            for (const vid of vids) {
+              const src = vid.currentSrc || vid.src
+              if (!src) continue
+              const btn = vid.closest('button')
+              const title = btn?.getAttribute('aria-label') || 'Avatar Motion Preview'
+              const dataUrl = await blobToDataUrl(src)
+              if (dataUrl) {
+                attachments.push({ type: 'video', dataUrl, title })
+              }
+            }
+
+            if (content.length > 0 || attachments.length > 0) {
+              items.push({ id, role, content, attachments })
+            }
+          }
+
+          // Inspect live stage avatar signature to detect outfit / avatar changes immediately
+          const allAvatarVids = Array.from(document.querySelectorAll('video[data-hatch-avatar-layer]'))
+          const stageVid =
+            allAvatarVids.find(v => !v.closest('[data-message-item="true"]')) || allAvatarVids[0] || null
+          let avatarSignature = null
+          if (stageVid) {
+            const fk = Object.keys(stageVid).find(k => k.startsWith('__reactFiber'))
+            let cur = fk ? stageVid[fk] : null
+            let staticBlob = ''
+            let defaultBlob = stageVid.src || ''
+            let workingBlob = ''
+            while (cur) {
+              let s = cur.memoizedState
+              while (s) {
+                const ms = s.memoizedState
+                if (ms && typeof ms === 'object') {
+                  const val = (ms.current && ms.current.value !== undefined) ? ms.current.value : ms
+                  if (typeof val === 'string' && val.startsWith('blob:') && !staticBlob) {
+                    staticBlob = val
+                  } else if (val && typeof val === 'object' && val.default && String(val.default).startsWith('blob:')) {
+                    defaultBlob = String(val.default || defaultBlob)
+                    workingBlob = String(val.working || '')
+                  }
+                }
+                s = s.next
+              }
+              cur = cur.return
+            }
+            const statusSurface = document.querySelector('[data-testid="hatch-status-panel-sliding-surface"]')
+            const surfaceName = statusSurface?.innerText?.split('\\n')?.[0]?.trim() || ''
+            avatarSignature = [surfaceName, staticBlob, defaultBlob, workingBlob].join('|')
+          }
+
+          return { items, avatarSignature }
         })()
       `)
 
-      if (!items || items.length === 0) return []
+      if (payload?.avatarSignature) {
+        if (this.lastAvatarSignature !== payload.avatarSignature) {
+          const prevSig = this.lastAvatarSignature
+          this.lastAvatarSignature = payload.avatarSignature
+          if (prevSig !== null || !this.getCachedAvatarAssets()) {
+            this.syncAvatarAssets(true).catch(() => {})
+          } else {
+            // Even on first check, verify whether cached meta matches live signature
+            try {
+              const metaPath = path.join(this.getAvatarCacheDir(), 'meta.json')
+              const meta = fs.existsSync(metaPath)
+                ? JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
+                : null
+              if (!meta || meta.avatarSignature !== payload.avatarSignature) {
+                this.syncAvatarAssets(true).catch(() => {})
+              }
+            } catch {
+              this.syncAvatarAssets(true).catch(() => {})
+            }
+          }
+        }
+      }
+
+      const items = payload?.items || []
+      if (items.length === 0) return []
 
       const baseTs = Date.now() - items.length * 1000
-      const cloudMessages: ChatMessage[] = items.map((item, idx) => ({
-        id: item.id,
-        role: item.role,
-        content: item.content,
-        timestamp: baseTs + idx * 1000,
-        status: 'done',
-      }))
+      const cloudMessages: ChatMessage[] = items.map((item, idx) => {
+        const attachments: ChatAttachment[] = []
+        for (const att of item.attachments || []) {
+          const saved = this.persistMediaAttachment(att.dataUrl, att.type, att.title)
+          if (saved) attachments.push(saved)
+        }
+        const fallbackText =
+          !item.content && attachments.length > 0
+            ? attachments.some((a) => a.type === 'video')
+              ? '[虚拟形象动作预览]'
+              : '[图片]'
+            : item.content
+        return {
+          id: item.id,
+          role: item.role,
+          content: fallbackText,
+          attachments: attachments.length > 0 ? attachments : undefined,
+          timestamp: baseTs + idx * 1000,
+          status: 'done',
+        }
+      })
 
       const lastAssistant = [...cloudMessages].reverse().find((m) => m.role === 'assistant')
       let newAssistantMsg: ChatMessage | undefined
@@ -116,7 +295,13 @@ export class MuseClient {
         this.lastSeenAssistantId = lastAssistant.id
       }
 
-      if (notifyIfChanged) {
+      const newDigest = cloudMessages
+        .map((m) => `${m.id}:${m.content.length}:${m.attachments?.length || 0}`)
+        .join(',')
+      const hasDigestChanged = newDigest !== this.lastCloudDigest
+      this.lastCloudDigest = newDigest
+
+      if (notifyIfChanged && (hasDigestChanged || newAssistantMsg)) {
         for (const cb of this.onCloudMessagesCallbacks) {
           cb(cloudMessages, newAssistantMsg)
         }
@@ -204,10 +389,10 @@ export class MuseClient {
     return win
   }
 
-  public async syncAvatarAssets(): Promise<AvatarAssets | null> {
+  public async syncAvatarAssets(force = false): Promise<AvatarAssets | null> {
     const cookies = this.sessionStore.getCookies()
     if (!cookies) return this.getCachedAvatarAssets()
-    if (this.avatarSyncing) return this.getCachedAvatarAssets()
+    if (this.avatarSyncing && !force) return this.getCachedAvatarAssets()
 
     this.avatarSyncing = true
     try {
@@ -216,6 +401,7 @@ export class MuseClient {
       const extracted: {
         ok: boolean
         agentName?: string
+        avatarSignature?: string
         staticB64?: string
         defaultB64?: string
         workingB64?: string
@@ -225,7 +411,8 @@ export class MuseClient {
           const start = Date.now()
           let videoEl = null
           while (Date.now() - start < 20000) {
-            videoEl = document.querySelector('video[data-hatch-avatar-layer]')
+            const allVids = Array.from(document.querySelectorAll('video[data-hatch-avatar-layer]'))
+            videoEl = allVids.find(v => !v.closest('[data-message-item="true"]')) || allVids[0] || null
             if (videoEl && videoEl.src && videoEl.src.startsWith('blob:')) break
             await new Promise(r => setTimeout(r, 300))
           }
@@ -286,10 +473,12 @@ export class MuseClient {
             surfaceName ||
             (rawTitle && !rawTitle.toLowerCase().includes('muse') ? rawTitle : '') ||
             'Muse'
+          const avatarSignature = [surfaceName || '', staticBlob || '', defaultUrl || '', workingUrl || ''].join('|')
 
           return {
             ok: true,
             agentName,
+            avatarSignature,
             staticB64,
             defaultB64,
             workingB64: workingB64 || defaultB64,
@@ -300,6 +489,10 @@ export class MuseClient {
 
       if (!extracted || !extracted.ok || !extracted.defaultB64) {
         return this.getCachedAvatarAssets()
+      }
+
+      if (extracted.avatarSignature) {
+        this.lastAvatarSignature = extracted.avatarSignature
       }
 
       const dir = this.getAvatarCacheDir()
@@ -326,6 +519,7 @@ export class MuseClient {
         JSON.stringify(
           {
             agentName: extracted.agentName || 'Muse',
+            avatarSignature: extracted.avatarSignature || undefined,
             staticDataUrl: extracted.staticB64 || undefined,
             updatedAt,
           },
@@ -419,8 +613,8 @@ export class MuseClient {
 
       try {
         await this.sendViaMuseWindow(content, cookies, onChunk, onEnd, onError)
-        // Update lastSeenAssistantId after our own turn finishes so background watcher doesn't duplicate
-        await this.fetchCloudMessages(false)
+        // Sync cloud messages & attachments + detect any avatar change after our own turn finishes
+        await this.fetchCloudMessages(true)
       } catch (err: any) {
         if (this.aborted) {
           onEnd('')
@@ -578,7 +772,16 @@ export class MuseClient {
 
             const extractCleanText = (el) => {
               const raw = (el.innerText || '').trim()
-              return raw.replace(/^(助手消息：|Assistant message:\\s*)/i, '').trim()
+              const cleaned = raw
+                .replace(/^(Copy|Copied|Edit|Retry)\\s+/i, '')
+                .replace(/^(你：|Muse：|助手消息：|Assistant message:\\s*)/i, '')
+                .replace(/\\n*(分享头像|Share avatar)\\s*$/i, '')
+                .replace(/\\n*👍\\s*$/i, '')
+                .trim()
+              if (cleaned) return cleaned
+              if (el.querySelector('video')) return '[虚拟形象动作预览]'
+              if (el.querySelector('img')) return '[图片生成完毕]'
+              return ''
             }
 
             while (Date.now() - start < 75000 && window.__museActiveRunId === myRunId) {

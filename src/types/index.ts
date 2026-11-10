@@ -11,10 +11,17 @@ export interface AvatarAssets {
   updatedAt?: number
 }
 
+export interface ChatAttachment {
+  type: 'image' | 'video'
+  url: string
+  title?: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
+  attachments?: ChatAttachment[]
   timestamp: number
   status?: 'pending' | 'streaming' | 'done' | 'error'
 }
