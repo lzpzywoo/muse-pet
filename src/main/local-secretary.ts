@@ -479,30 +479,65 @@ export class LocalSecretary {
   // ---------------------------------------------------------------------------
 
   public async captureDesktopScreen(): Promise<ScreenCaptureResult> {
-    const sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: { width: 1920, height: 1080 },
-    })
+    const visibleAppWindows = BrowserWindow.getAllWindows().filter(
+      (w) => !w.isDestroyed() && w.isVisible()
+    )
+    const winBuild = Number(os.release().split('.')[2] || 0)
+    const useDwmExclude =
+      (process.platform === 'win32' && winBuild >= 19041) || process.platform === 'darwin'
 
-    if (!sources || sources.length === 0) {
-      throw new Error('未能获取到当前桌面屏幕画面')
-    }
+    try {
+      if (useDwmExclude) {
+        for (const w of visibleAppWindows) {
+          w.setContentProtection(true)
+        }
+        await new Promise((r) => setTimeout(r, 90))
+      } else {
+        for (const w of visibleAppWindows) {
+          w.hide()
+        }
+        await new Promise((r) => setTimeout(r, 140))
+      }
 
-    const primary = sources[0]
-    const pngBuffer = primary.thumbnail.toPNG()
-    const size = primary.thumbnail.getSize()
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 1920, height: 1080 },
+      })
 
-    const mediaDir = path.join(app.getPath('userData'), 'media_cache')
-    fs.mkdirSync(mediaDir, { recursive: true })
-    const filePath = path.join(mediaDir, `screen-${Date.now()}.png`)
-    fs.writeFileSync(filePath, pngBuffer)
+      if (!sources || sources.length === 0) {
+        throw new Error('未能获取到当前桌面屏幕画面')
+      }
 
-    return {
-      filePath,
-      fileUrl: pathToFileURL(filePath).href,
-      base64Data: pngBuffer.toString('base64'),
-      width: size.width,
-      height: size.height,
+      const primary = sources[0]
+      const pngBuffer = primary.thumbnail.toPNG()
+      const size = primary.thumbnail.getSize()
+
+      const mediaDir = path.join(app.getPath('userData'), 'media_cache')
+      fs.mkdirSync(mediaDir, { recursive: true })
+      const filePath = path.join(mediaDir, `screen-${Date.now()}.png`)
+      fs.writeFileSync(filePath, pngBuffer)
+
+      return {
+        filePath,
+        fileUrl: pathToFileURL(filePath).href,
+        base64Data: pngBuffer.toString('base64'),
+        width: size.width,
+        height: size.height,
+      }
+    } finally {
+      if (useDwmExclude) {
+        for (const w of visibleAppWindows) {
+          if (!w.isDestroyed()) {
+            w.setContentProtection(false)
+          }
+        }
+      } else {
+        for (const w of visibleAppWindows) {
+          if (!w.isDestroyed()) {
+            w.show()
+          }
+        }
+      }
     }
   }
 
