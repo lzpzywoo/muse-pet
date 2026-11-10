@@ -12,9 +12,6 @@ import type {
   PendingSecretaryAction,
   PetBubblePayload,
   ProxyConfig,
-  SecretaryReminder,
-  WorkflowMacroConfig,
-  WorkflowMacroId,
 } from '../types'
 
 export function registerIpcHandlers(
@@ -81,73 +78,6 @@ export function registerIpcHandlers(
       petWin.webContents.send('plugin:list-updated', state.plugins || [])
     }
   })
-
-  localSecretary.onReminderFired((reminder) => {
-    const chatWin = windowManager.getChatWindow()
-    const isChatHidden = !chatWin || chatWin.isDestroyed() || !chatWin.isVisible()
-    if (isChatHidden) {
-      unreadCount++
-    }
-    const prefix =
-      reminder.source === 'focus'
-        ? '🎯 [专注完成]'
-        : reminder.source === 'meeting'
-        ? '🎙️ [会议提醒]'
-        : '⏰ [日程提醒]'
-    const alertText = `${prefix} ${reminder.title}`
-
-    windowManager.setAvatarState('talking')
-    sendPetBubble({
-      id: reminder.id,
-      text: alertText,
-      status: 'done',
-      unreadCount,
-      timestamp: Date.now(),
-    })
-    setTimeout(() => {
-      if (windowManager.getAvatarState() === 'talking') {
-        windowManager.setAvatarState('idle')
-      }
-    }, 6000)
-
-    messageHistory.push({
-      id: reminder.id,
-      role: 'assistant',
-      content: `${alertText}\n> 设定时间已到，Luna 主动提醒你处理该事项。`,
-      timestamp: Date.now(),
-      status: 'done',
-    })
-    savePersistedHistory()
-    broadcastMessagesSynced()
-  })
-
-  // Trigger Daily First-Launch Proactive Briefing if not yet run today
-  setTimeout(async () => {
-    try {
-      if (sessionStore.getProfile().isLoggedIn && localSecretary.shouldRunDailyFirstBrief()) {
-        localSecretary.markDailyFirstBriefDone()
-        const state = localSecretary.getState()
-        const pendingTodos = state.todos.filter((t) => !t.done).length
-        const activeRems = state.reminders.filter((r) => !r.fired).length
-        const briefBubble = `☀️ 早安！今天你有 ${pendingTodos} 项待办、${activeRems} 个提醒。随时输入 /brief 或 /work 开启高效一天！`
-        windowManager.setAvatarState('talking')
-        sendPetBubble({
-          id: `daily-brief-${Date.now()}`,
-          text: briefBubble,
-          status: 'done',
-          unreadCount: unreadCount + 1,
-          timestamp: Date.now(),
-        })
-        setTimeout(() => {
-          if (windowManager.getAvatarState() === 'talking') {
-            windowManager.setAvatarState('idle')
-          }
-        }, 5500)
-      }
-    } catch (e) {
-      console.warn('Daily first brief check error:', e)
-    }
-  }, 6500)
 
   localSecretary.onActionUpdated((action) => {
     const chatWin = windowManager.getChatWindow()
@@ -329,117 +259,6 @@ export function registerIpcHandlers(
       }
     }
 
-    // 8. Proactive Briefing (`/brief` or natural language asking for daily briefing / 今日简报 / 早报)
-    const isBriefCmd = /^\/brief(\s+|$)/i.test(trimmed)
-    const isBriefNL =
-      !trimmed.startsWith('/') &&
-      /(今日|今天|每日|早间|工作).*(简报|早报|汇总|日报|情况)/i.test(trimmed)
-
-    if (isBriefCmd || isBriefNL) {
-      const briefData = await localSecretary.generateDailyBriefing(true)
-      return {
-        promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【本地小秘书已采集今日简报全量数据】\n${briefData}\n请以干练、贴心的私人小秘书口吻，为用户生成一份结构清晰的【今日工作简报】（包含今日待办与提醒、未读邮件重点、电脑健康状态与今日行动建议）。\n[/MUSE_LOCAL_CONTEXT]`,
-      }
-    }
-
-    // 9. Workspace Quick Macros (`/work`, `/focus`, `/meeting`, `/off` or natural language)
-    const wfMatch = trimmed.match(/^\/(work|focus|meeting|off)(?:\s+(.*))?$/i)
-    let targetMacro: WorkflowMacroId | null = wfMatch
-      ? (wfMatch[1].toLowerCase() as WorkflowMacroId)
-      : null
-    let macroArg = wfMatch ? (wfMatch[2] || '').trim() : ''
-
-    if (!targetMacro && !trimmed.startsWith('/')) {
-      if (/(开启|进入|启动|打开).*(工作模式|办公模式|开工模式)/i.test(trimmed)) {
-        targetMacro = 'work'
-      } else if (/(开启|进入|启动|来个).*(专注模式|番茄钟|深度专注)/i.test(trimmed)) {
-        targetMacro = 'focus'
-        macroArg = trimmed
-      } else if (/(开启|进入|启动|准备).*(会议模式|开会模式|准备开会)/i.test(trimmed)) {
-        targetMacro = 'meeting'
-      } else if (/(开启|进入|启动|准备).*(收工模式|下班模式|收工复盘|准备下班)/i.test(trimmed)) {
-        targetMacro = 'off'
-      }
-    }
-
-    if (targetMacro) {
-      const res = await localSecretary.executeWorkflowMacro(targetMacro, macroArg)
-      return {
-        promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【本地小秘书已执行场景工作流宏】\n${res.summary}\n请以元气贴心的桌面小秘书口吻，向用户汇报已帮他切换至该工作流场景，并总结上述简报/倒计时/复盘要点。\n[/MUSE_LOCAL_CONTEXT]`,
-        directPendingAction: res.pendingAction,
-      }
-    }
-
-    // 10. Natural language workflow customization (e.g., "把 https://notion.so 加到我的工作模式里" or "把 notepad 加到工作模式")
-    const wfConfigAddMatch =
-      !trimmed.startsWith('/') &&
-      trimmed.match(
-        /(?:把|将)\s*([^\s,，。]+)\s*(?:加到|添加到|加入|放进)(?:我的)?(工作模式|会议模式)/i
-      )
-    if (wfConfigAddMatch) {
-      const item = wfConfigAddMatch[1].trim()
-      const modeName = wfConfigAddMatch[2]
-      const wfId: WorkflowMacroId = modeName.includes('会议') ? 'meeting' : 'work'
-      const curWf = localSecretary.getState().workflows[wfId]
-      if (/^https?:\/\//i.test(item) || /\.(com|cn|org|io|ai|net|so|dev)\b/i.test(item)) {
-        const normalizedUrl = /^https?:\/\//i.test(item) ? item : `https://${item}`
-        const urls = Array.from(new Set([...curWf.urls, normalizedUrl]))
-        localSecretary.updateWorkflowConfig(wfId, { urls })
-        return {
-          promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n已成功将网址 \`${normalizedUrl}\` 添加到用户的【${curWf.name}】启动列表中（当前列表: ${urls.join(', ')}）。请向用户确认已保存该配置。\n[/MUSE_LOCAL_CONTEXT]`,
-        }
-      } else {
-        const apps = Array.from(new Set([...curWf.apps, item]))
-        localSecretary.updateWorkflowConfig(wfId, { apps })
-        return {
-          promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n已成功将本地应用 \`${item}\` 添加到用户的【${curWf.name}】启动列表中（当前应用列表: ${apps.join(', ')}）。请向用户确认已保存该配置。\n[/MUSE_LOCAL_CONTEXT]`,
-        }
-      }
-    }
-
-    // 11. Reminders & Todos (`/remind`, `/todo`, or natural language "25分钟后提醒我...", "记一条待办...")
-    if (/^\/todo(\s+|$)/i.test(trimmed)) {
-      const arg = trimmed.replace(/^\/todo\s*/i, '').trim()
-      if (!arg || /^(list|查看|列表)$/i.test(arg)) {
-        const sched = localSecretary.getScheduleSummaryText()
-        return {
-          promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【当前用户的日程提醒与待办清单】\n${sched}\n请向用户清晰播报当前的待办与提醒。\n[/MUSE_LOCAL_CONTEXT]`,
-        }
-      }
-      const added = localSecretary.addTodo(arg)
-      return {
-        promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n已为用户新增待办事项：「${added.text}」。\n当前完整日程与待办：\n${localSecretary.getScheduleSummaryText()}\n请向用户确认已记下该待办。\n[/MUSE_LOCAL_CONTEXT]`,
-      }
-    }
-
-    const nlTodoMatch =
-      !trimmed.startsWith('/') &&
-      trimmed.match(/(?:记一条待办|添加待办|新增待办|备忘[:：]|待办[:：])\s*(.+)/i)
-    if (nlTodoMatch && nlTodoMatch[1]) {
-      const added = localSecretary.addTodo(nlTodoMatch[1].trim())
-      return {
-        promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n已为用户新增待办事项：「${added.text}」。\n当前完整日程与待办：\n${localSecretary.getScheduleSummaryText()}\n请向用户确认已记下该待办。\n[/MUSE_LOCAL_CONTEXT]`,
-      }
-    }
-
-    const isRemindIntent =
-      /^\/remind\b/i.test(trimmed) ||
-      (!trimmed.startsWith('/') &&
-        /(分钟|小时|秒钟?|半小时|一刻钟|\d{1,2}[:：点时]).*(提醒我|叫我|通知我)/i.test(trimmed))
-    if (isRemindIntent) {
-      const parsed = localSecretary.parseReminderFromText(trimmed)
-      if (parsed) {
-        const rem = localSecretary.addReminder(parsed.title, parsed.delayMinutes, 'reminder')
-        const dueTimeStr = new Date(rem.dueAt).toLocaleTimeString('zh-CN', {
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-        })
-        return {
-          promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【本地小秘书已创建定时闹钟提醒】\n- 提醒内容: ${rem.title}\n- 到期时间: ${dueTimeStr}（约 ${Math.round(parsed.delayMinutes * 10) / 10} 分钟后）\n到点时桌面宠物 Luna 会自动在头顶冒泡并弹出系统通知。请向用户贴心确认闹钟已设好。\n[/MUSE_LOCAL_CONTEXT]`,
-        }
-      }
-    }
 
     // 12. Mutating / Write / Shell operations in natural language -> ask Luna to output a ```powershell``` block so we can gate it with an approval card
     const isWriteIntent =
@@ -814,41 +633,6 @@ export function registerIpcHandlers(
 
   ipcMain.handle('secretary:get-state', () => {
     return localSecretary.getState()
-  })
-
-  ipcMain.handle(
-    'secretary:update-workflow',
-    (_event, payload: { id: WorkflowMacroId; patch: Partial<WorkflowMacroConfig> }) => {
-      return localSecretary.updateWorkflowConfig(payload.id, payload.patch)
-    }
-  )
-
-  ipcMain.handle(
-    'secretary:add-reminder',
-    (
-      _event,
-      payload: { title: string; delayMinutes: number; source?: SecretaryReminder['source'] }
-    ) => {
-      localSecretary.addReminder(payload.title, payload.delayMinutes, payload.source || 'reminder')
-      return localSecretary.getState()
-    }
-  )
-
-  ipcMain.handle('secretary:remove-reminder', (_event, id: string) => {
-    return localSecretary.removeReminder(id)
-  })
-
-  ipcMain.handle('secretary:add-todo', (_event, text: string) => {
-    localSecretary.addTodo(text)
-    return localSecretary.getState()
-  })
-
-  ipcMain.handle('secretary:toggle-todo', (_event, id: string) => {
-    return localSecretary.toggleTodo(id)
-  })
-
-  ipcMain.handle('secretary:remove-todo', (_event, id: string) => {
-    return localSecretary.removeTodo(id)
   })
 
   // Self-Modifying UI & Live Plugin IPC handlers
