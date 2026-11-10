@@ -2,7 +2,10 @@ node_modules/
 dist/
 dist-electron/
 release/
-.thinkrail/context/
+.thinkrail/
+architecture.md
+goal-and-requirements.md
+README_CN.md
 .env
 .env.local
 *.log
