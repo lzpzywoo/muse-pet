@@ -8,6 +8,7 @@ import { ProxyManager } from './proxy-manager'
 import { LocalSecretary } from './local-secretary'
 import type {
   ChatMessage,
+  MusePlugin,
   PendingSecretaryAction,
   PetBubblePayload,
   ProxyConfig,
@@ -74,6 +75,10 @@ export function registerIpcHandlers(
     const chatWin = windowManager.getChatWindow()
     if (chatWin && !chatWin.isDestroyed()) {
       chatWin.webContents.send('secretary:state-updated', state)
+    }
+    const petWin = windowManager.getPetWindow()
+    if (petWin && !petWin.isDestroyed()) {
+      petWin.webContents.send('plugin:list-updated', state.plugins || [])
     }
   })
 
@@ -178,8 +183,42 @@ export function registerIpcHandlers(
     expectsWriteApproval?: boolean
     writeActionTitle?: string
     directPendingAction?: PendingSecretaryAction
+    appliedPlugin?: MusePlugin
   }> => {
     const trimmed = rawContent.trim()
+
+    // 0. Reset UI / Plugins (`/reset-ui` or natural language asking to restore default UI)
+    if (
+      /^\/reset-ui(\s+|$)/i.test(trimmed) ||
+      (!trimmed.startsWith('/') &&
+        /(恢复默认|重置|还原|清空).*(界面|主题|样式|页面|插件)/i.test(trimmed))
+    ) {
+      localSecretary.resetAllPlugins()
+      return {
+        promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n系统已执行 \`resetAllPlugins()\`，清空了所有自定义主题与页面挂件插件，将终端与桌宠恢复为默认初始界面。请向用户确认已恢复默认界面。\n[/MUSE_LOCAL_CONTEXT]`,
+      }
+    }
+
+    // 0.5 Self-Modifying UI & Live Plugin Engine (`/plugin <req>` or natural language asking to modify UI/theme/pet or add widgets like alarm clock)
+    const isPluginSlash = /^\/(plugin|ui)\s+/i.test(trimmed)
+    const isSelfModifyNL =
+      !trimmed.startsWith('/') &&
+      (/(修改|改一下|换个|换成|切换|定制|美化|调整|装修).*(终端|界面|页面|主题|配色|背景|样式|字体|边框|桌宠|宠物|气泡|外观|呈现)/i.test(
+        trimmed
+      ) ||
+        /(加一个|增加一个|挂载|加个|做一个|弄一个|新增一个|添加).*(小闹钟|闹钟|倒计时|计时器|秒表|时钟|便签|备忘贴|小组件|挂件|插件|小功能|状态栏)/i.test(
+          trimmed
+        ) ||
+        /(赛博朋克|黑客帝国|樱花粉|复古琥珀).*(主题|风格|界面|终端)/i.test(trimmed))
+
+    if (isPluginSlash || isSelfModifyNL) {
+      const reqBody = isPluginSlash ? trimmed.replace(/^\/(plugin|ui)\s+/i, '').trim() : trimmed
+      const synthesized = localSecretary.synthesizePluginFromRequest(reqBody)
+      return {
+        promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【Muse Pet 自进化界面与插件引擎已即时热加载】\n- 已生成并激活插件: 「${synthesized.name}」 (${synthesized.category})\n- 插件效果说明: ${synthesized.description}\n如果你希望进一步微调样式或功能，也可以在回复中附带 \`\`\`muse-plugin\n{"name":"...","category":"theme|widget|pet","chatCss":"...","chatHtml":"...","chatJs":"...","petCss":"..."}\n\`\`\` 代码块。\n请以灵动自豪的口吻告诉用户：我已经直接帮你修改好 Muse Pet 的界面/挂载好该小功能并立即生效啦！同时提醒他可以通过下方的【插件热加载控制卡】随时一键停用、查看或回滚默认。\n[/MUSE_LOCAL_CONTEXT]`,
+        appliedPlugin: synthesized,
+      }
+    }
 
     // 1. Explicit `/ps <cmd>` -> directly create a pending authorization action without waiting
     if (/^\/ps\s+/i.test(trimmed)) {
@@ -433,12 +472,16 @@ export function registerIpcHandlers(
               (m.attachments?.length || 0) === (newAssistantMsg.attachments?.length || 0))
         )
 
-      // Preserve any pendingAction or local screenshot attachments on matching messages
+      // Preserve any pendingAction, appliedPlugin, or local screenshot attachments on matching messages
       const existingActionsByContent = new Map<string, PendingSecretaryAction>()
+      const existingPluginsByContent = new Map<string, MusePlugin>()
       const existingUserAttachments = new Map<string, ChatMessage['attachments']>()
       for (const oldMsg of messageHistory) {
         if (oldMsg.pendingAction) {
           existingActionsByContent.set(oldMsg.content.trim(), oldMsg.pendingAction)
+        }
+        if (oldMsg.appliedPlugin) {
+          existingPluginsByContent.set(oldMsg.content.trim(), oldMsg.appliedPlugin)
         }
         if (oldMsg.role === 'user' && oldMsg.attachments && oldMsg.attachments.length > 0) {
           existingUserAttachments.set(oldMsg.content.trim(), oldMsg.attachments)
@@ -448,6 +491,8 @@ export function registerIpcHandlers(
       messageHistory = cloudMessages.map((cm) => {
         const pendingAction =
           cm.pendingAction || existingActionsByContent.get(cm.content.trim())
+        const appliedPlugin =
+          cm.appliedPlugin || existingPluginsByContent.get(cm.content.trim())
         const attachments =
           cm.attachments && cm.attachments.length > 0
             ? cm.attachments
@@ -455,6 +500,7 @@ export function registerIpcHandlers(
         return {
           ...cm,
           ...(pendingAction ? { pendingAction } : {}),
+          ...(appliedPlugin ? { appliedPlugin } : {}),
           ...(attachments ? { attachments } : {}),
         }
       })
@@ -656,6 +702,15 @@ export function registerIpcHandlers(
           }
         }
 
+        // Check if Luna emitted a custom ```muse-plugin``` JSON block or if pre-flight synthesized one
+        let appliedPlugin = enriched.appliedPlugin
+        if (finalContent) {
+          const extractedPlugin = localSecretary.extractPluginFromText(finalContent)
+          if (extractedPlugin) {
+            appliedPlugin = extractedPlugin
+          }
+        }
+
         if (chatWin && !chatWin.isDestroyed()) {
           chatWin.webContents.send('chat:stream-end', finalContent)
         }
@@ -665,11 +720,12 @@ export function registerIpcHandlers(
             role: 'assistant',
             content: finalContent,
             pendingAction,
+            appliedPlugin,
             timestamp: Date.now(),
             status: 'done',
           })
           savePersistedHistory()
-          if (pendingAction) {
+          if (pendingAction || appliedPlugin) {
             broadcastMessagesSynced()
           }
 
@@ -777,6 +833,28 @@ export function registerIpcHandlers(
 
   ipcMain.handle('secretary:remove-todo', (_event, id: string) => {
     return localSecretary.removeTodo(id)
+  })
+
+  // Self-Modifying UI & Live Plugin IPC handlers
+  ipcMain.handle('plugin:get-list', () => {
+    return localSecretary.getPlugins()
+  })
+
+  ipcMain.handle('secretary:install-plugin', (_event, pluginInput: any) => {
+    localSecretary.installOrUpdatePlugin(pluginInput)
+    return localSecretary.getState()
+  })
+
+  ipcMain.handle('secretary:toggle-plugin', (_event, id: string) => {
+    return localSecretary.togglePlugin(id)
+  })
+
+  ipcMain.handle('secretary:remove-plugin', (_event, id: string) => {
+    return localSecretary.removePlugin(id)
+  })
+
+  ipcMain.handle('secretary:reset-plugins', () => {
+    return localSecretary.resetAllPlugins()
   })
 
   // Auth events

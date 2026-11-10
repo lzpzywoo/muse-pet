@@ -41,6 +41,16 @@ const petApi: PetApi = {
   getAvatarState: () => {
     return ipcRenderer.invoke('avatar:get-state')
   },
+  getPlugins: () => {
+    return ipcRenderer.invoke('plugin:get-list')
+  },
+  onPluginsUpdated: (callback) => {
+    const subscription = (_event: any, plugins: any) => callback(plugins)
+    ipcRenderer.on('plugin:list-updated', subscription)
+    return () => {
+      ipcRenderer.removeListener('plugin:list-updated', subscription)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('petApi', petApi)

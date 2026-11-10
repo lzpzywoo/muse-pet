@@ -214,9 +214,100 @@ export default function ChatApp() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const pluginDockRef = useRef<HTMLDivElement>(null)
 
   const agentSlug = (authProfile.agentName || 'luna').toLowerCase().replace(/\s+/g, '-')
   const agentDisplayName = authProfile.agentName || 'Luna'
+  const activePlugins = (secretaryState?.plugins || []).filter((p) => p.enabled)
+  const combinedChatCss = activePlugins
+    .filter((p) => p.chatCss)
+    .map((p) => `/* Plugin: ${p.name} */\n${p.chatCss}`)
+    .join('\n')
+
+  // Mount & execute enabled ChatWindow widget plugins (chatHtml + chatJs + sdk)
+  useEffect(() => {
+    const dock = pluginDockRef.current
+    if (!dock) return
+    dock.innerHTML = ''
+    const cleanups: Array<() => void> = []
+
+    const playBeep = () => {
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext
+        if (!AudioCtx) return
+        const ctx = new AudioCtx()
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.type = 'sine'
+        osc.frequency.setValueAtTime(880, ctx.currentTime)
+        gain.gain.setValueAtTime(0.12, ctx.currentTime)
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35)
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.start()
+        osc.stop(ctx.currentTime + 0.35)
+      } catch {
+        // ignore audio errors
+      }
+    }
+
+    const widgets = (secretaryState?.plugins || []).filter(
+      (p) => p.enabled && (p.chatHtml || p.chatJs)
+    )
+    for (const plg of widgets) {
+      const container = document.createElement('div')
+      container.setAttribute('data-muse-plugin-id', plg.id)
+      if (plg.chatHtml) {
+        container.innerHTML = plg.chatHtml
+      }
+      dock.appendChild(container)
+      if (plg.chatJs) {
+        const sdk = {
+          sendCommand: (cmd: string) => handleSend(cmd),
+          addReminder: (title: string, mins: number) =>
+            window.chatApi?.addSecretaryReminder(title, mins, 'reminder'),
+          addTodo: (text: string) => window.chatApi?.addSecretaryTodo(text),
+          notify: (msg: string) => {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: String(Date.now()),
+                role: 'assistant',
+                content: msg,
+                timestamp: Date.now(),
+                status: 'done',
+              },
+            ])
+          },
+          playBeep,
+          storage: {
+            get: (key: string) => localStorage.getItem(`muse_plg_${plg.id}_${key}`),
+            set: (key: string, val: string) =>
+              localStorage.setItem(`muse_plg_${plg.id}_${key}`, val),
+          },
+        }
+        try {
+          const fn = new Function('root', 'sdk', plg.chatJs)
+          const cleanup = fn(container, sdk)
+          if (typeof cleanup === 'function') {
+            cleanups.push(cleanup)
+          }
+        } catch (err) {
+          console.warn('Chat plugin JS error:', err)
+        }
+      }
+    }
+
+    return () => {
+      cleanups.forEach((fn) => {
+        try {
+          fn()
+        } catch {
+          // ignore
+        }
+      })
+    }
+  }, [secretaryState?.plugins])
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -407,8 +498,23 @@ export default function ChatApp() {
       ])
       return true
     }
-    if (cmd === '/proxy' || cmd === '/settings' || cmd === '/net' || cmd === '/theme') {
+    if (cmd === '/proxy' || cmd === '/settings' || cmd === '/net' || cmd === '/theme' || cmd === '/plugins') {
       setShowSettings((s) => !s)
+      return true
+    }
+    if (cmd === '/reset-ui') {
+      const st = await window.chatApi?.resetAllPlugins()
+      if (st) setSecretaryState(st)
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: String(Date.now()),
+          role: 'assistant',
+          content: '✨ 已清空所有自定义主题与小组件插件，恢复终端与桌宠默认界面。',
+          timestamp: Date.now(),
+          status: 'done',
+        },
+      ])
       return true
     }
     if (cmd === '/sync' || cmd === 'sync') {
@@ -437,7 +543,7 @@ export default function ChatApp() {
           id: String(Date.now()),
           role: 'assistant',
           content:
-            '支持的电脑小秘书、工作流宏与终端快捷命令（也支持直接用自然语言吩咐）：\n```shell\n/brief          # 生成今日小秘书全量简报 (今日待办 + 未读 Gmail + 系统状态)\n/work           # 🚀 开启工作模式 (一键打开工作网页 + 启动常用软件 + 汇报简报)\n/focus [分钟]    # 🎯 开启深度专注番茄钟 (默认 25m，到点桌宠 Luna 主动冒泡提醒)\n/meeting        # 🎙️ 开启会议准备模式 (打开日历 + 设定 45m 散会纪要提醒 + 静音授权)\n/off            # 🌙 开启收工复盘模式 (汇总今日待办 + 检查后台进程 + 一键锁屏授权)\n/remind <时间> <事> # 设定闹钟提醒 (如: /remind 25m 复盘代码，或直接说"20分钟后提醒我...")\n/todo [待办内容] # 查看或新增今日待办事项 (如: /todo 发版 v0.2)\n/gmail <条件>    # 打开 Gmail 按条件筛选并由 Luna 提炼邮件重点 (如: /gmail 未读)\n/screen [问题]   # 截取当前电脑桌面发送给 Luna 看图分析\n/sys            # 查看当前电脑 CPU、内存与高占用进程实时状态\n/ps <命令>       # 创建待授权的本地 PowerShell 执行卡片 (需手动点击批准)\n/settings       # 打开设置面板 (管理定时提醒、待办、工作流启动项、透明度与代理)\n/clear          # 清空当前终端缓冲区\n/exit           # 收起终端窗口 (同 Esc / Alt+Space)\n```',
+            '支持的电脑小秘书、工作流宏与终端快捷命令（也支持直接用自然语言吩咐）：\n```shell\n/brief          # 生成今日小秘书全量简报 (今日待办 + 未读 Gmail + 系统状态)\n/work           # 🚀 开启工作模式 (一键打开工作网页 + 启动常用软件 + 汇报简报)\n/focus [分钟]    # 🎯 开启深度专注番茄钟 (默认 25m，到点桌宠 Luna 主动冒泡提醒)\n/meeting        # 🎙️ 开启会议准备模式 (打开日历 + 设定 45m 散会纪要提醒 + 静音授权)\n/off            # 🌙 开启收工复盘模式 (汇总今日待办 + 检查后台进程 + 一键锁屏授权)\n/remind <时间> <事> # 设定闹钟提醒 (如: /remind 25m 复盘代码，或直接说"20分钟后提醒我...")\n/todo [待办内容] # 查看或新增今日待办事项 (如: /todo 发版 v0.2)\n/plugin <修改需求> # 🎨 让 Luna 自修改界面或挂载小功能 (如: 换成赛博朋克主题 / 增加一个小闹钟 / 给桌宠加霓虹光环)\n/reset-ui       # 一键清空所有自定义主题与插件，恢复出厂界面\n/gmail <条件>    # 打开 Gmail 按条件筛选并由 Luna 提炼邮件重点 (如: /gmail 未读)\n/screen [问题]   # 截取当前电脑桌面发送给 Luna 看图分析\n/sys            # 查看当前电脑 CPU、内存与高占用进程实时状态\n/ps <命令>       # 创建待授权的本地 PowerShell 执行卡片 (需手动点击批准)\n/settings       # 打开设置面板 (管理定时提醒、待办、工作流启动项、透明度与代理)\n/clear          # 清空当前终端缓冲区\n/exit           # 收起终端窗口 (同 Esc / Alt+Space)\n```',
           timestamp: Date.now(),
         },
       ])
@@ -613,9 +719,10 @@ export default function ChatApp() {
 
   return (
     <div className="w-screen h-screen p-2 flex flex-col select-none overflow-hidden">
+      {combinedChatCss && <style id="muse-custom-plugins-css">{combinedChatCss}</style>}
       <div
         style={{ '--terminal-alpha': appearance.opacity / 100 } as React.CSSProperties}
-        className={`liquid-glass-shell w-full ${
+        className={`liquid-glass-terminal liquid-glass-shell w-full ${
           isCompact ? 'h-[430px]' : 'h-full'
         } flex flex-col text-slate-100 overflow-hidden transition-all duration-300`}
       >
@@ -714,6 +821,9 @@ export default function ChatApp() {
             </button>
           </div>
         </div>
+
+        {/* Dynamic Plugin Widget Dock (e.g., Mini Alarm Clock, Sticky Note, Custom Widgets) */}
+        <div ref={pluginDockRef} id="muse-plugin-dock" className="no-drag" />
 
         {/* Settings Drawer (/settings · Appearance, Network & Secretary Workflows) */}
         {showSettings && (
@@ -1117,6 +1227,81 @@ export default function ChatApp() {
                     </div>
                   )}
                 </div>
+
+                {/* 4. Installed Self-Modifying UI Plugins & Widgets Manager */}
+                <div className="space-y-2 pt-2 border-t border-white/10">
+                  <div className="flex items-center justify-between text-slate-200 font-medium">
+                    <span className="flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-fuchsia-400" />
+                      <span>已安装的界面主题与小功能插件 ({(secretaryState.plugins || []).length})</span>
+                    </span>
+                    {(secretaryState.plugins || []).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const st = await window.chatApi?.resetAllPlugins()
+                          if (st) setSecretaryState(st)
+                        }}
+                        className="text-[10.5px] text-rose-300 hover:text-rose-200 underline"
+                      >
+                        一键重置恢复默认 (/reset-ui)
+                      </button>
+                    )}
+                  </div>
+                  {(secretaryState.plugins || []).length === 0 ? (
+                    <div className="text-[11px] text-slate-400">
+                      暂无自定义插件。直接对 Luna 说“把终端改成赛博朋克主题”或“增加一个小闹钟”即可实时热生成！
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {(secretaryState.plugins || []).map((plg) => (
+                        <div
+                          key={plg.id}
+                          className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-white/[0.04] border border-white/10 text-[11px]"
+                        >
+                          <div className="min-w-0 flex-1 pr-2">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-medium text-slate-100 truncate">{plg.name}</span>
+                              <span className="px-1.5 py-0.2 rounded bg-fuchsia-500/20 border border-fuchsia-400/35 text-[9.5px] text-fuchsia-200">
+                                {plg.category}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 truncate">
+                              {plg.description}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const st = await window.chatApi?.togglePlugin(plg.id)
+                                if (st) setSecretaryState(st)
+                              }}
+                              className={`px-2 py-0.5 rounded text-[10px] border transition-all ${
+                                plg.enabled
+                                  ? 'bg-emerald-500/25 border-emerald-400/50 text-emerald-200'
+                                  : 'bg-white/5 border-white/15 text-slate-400'
+                              }`}
+                            >
+                              {plg.enabled ? '已启用' : '已停用'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const st = await window.chatApi?.removePlugin(plg.id)
+                                if (st) setSecretaryState(st)
+                              }}
+                              className="text-slate-400 hover:text-rose-400 p-0.5"
+                              title="卸载此插件"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -1238,6 +1423,74 @@ export default function ChatApp() {
                       <span className="animate-terminal-cursor" />
                     </div>
                   ) : null}
+
+                  {/* Live Self-Modifying UI Plugin Control Card */}
+                  {msg.appliedPlugin && (
+                    <div className="mt-2.5 rounded-xl border border-fuchsia-400/40 bg-slate-950/85 overflow-hidden shadow-lg">
+                      <div className="flex items-center justify-between px-3 py-2 bg-fuchsia-500/15 border-b border-fuchsia-400/25">
+                        <div className="flex items-center gap-2 font-terminal text-xs text-fuchsia-200">
+                          <Sparkles className="w-3.5 h-3.5 text-fuchsia-400 flex-shrink-0" />
+                          <span className="font-semibold">{msg.appliedPlugin.name}</span>
+                        </div>
+                        {(() => {
+                          const livePlg = (secretaryState?.plugins || []).find(
+                            (p) => p.id === msg.appliedPlugin!.id
+                          )
+                          const isEnabled = livePlg ? livePlg.enabled : false
+                          return (
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-terminal ${
+                                isEnabled
+                                  ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-400/40'
+                                  : 'bg-slate-700/60 text-slate-300'
+                              }`}
+                            >
+                              {isEnabled ? '⚡ 已热加载生效' : '已停用'}
+                            </span>
+                          )
+                        })()}
+                      </div>
+                      <div className="p-3 space-y-2.5 font-terminal text-xs">
+                        <div className="text-[11.5px] text-slate-300/90">
+                          {msg.appliedPlugin.description}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const st = await window.chatApi?.togglePlugin(msg.appliedPlugin!.id)
+                              if (st) setSecretaryState(st)
+                            }}
+                            className="px-3 py-1 rounded-lg bg-fuchsia-500/25 hover:bg-fuchsia-500/40 border border-fuchsia-400/50 text-fuchsia-100 text-[11px] transition-all"
+                          >
+                            {(() => {
+                              const livePlg = (secretaryState?.plugins || []).find(
+                                (p) => p.id === msg.appliedPlugin!.id
+                              )
+                              return livePlg?.enabled ? '停用此修改' : '重新启用'
+                            })()}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const st = await window.chatApi?.removePlugin(msg.appliedPlugin!.id)
+                              if (st) setSecretaryState(st)
+                            }}
+                            className="px-3 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-400/40 text-rose-200 text-[11px] transition-all"
+                          >
+                            卸载并回滚
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setShowSettings(true)}
+                            className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/15 text-slate-300 text-[11px] transition-all"
+                          >
+                            插件管理 ({(secretaryState?.plugins || []).length})
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Terminal Authorization Card for Local Secretary Write / PowerShell Actions */}
                   {msg.pendingAction && (
@@ -1407,7 +1660,8 @@ export default function ChatApp() {
                 { cmd: '/brief', label: '☀️ 今日简报' },
                 { cmd: '/work', label: '🚀 工作模式' },
                 { cmd: '/focus 25', label: '🎯 专注25m' },
-                { cmd: '/meeting', label: '🎙️ 会议模式' },
+                { cmd: '/plugin 增加一个小闹钟', label: '⏰ 挂载小闹钟' },
+                { cmd: '/plugin 把终端改成赛博朋克主题', label: '🎨 赛博主题' },
                 { cmd: '/off', label: '🌙 收工复盘' },
               ].map((item) => (
                 <button

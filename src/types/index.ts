@@ -56,10 +56,26 @@ export interface WorkflowMacroConfig {
   defaultMinutes?: number
 }
 
+export interface MusePlugin {
+  id: string
+  name: string
+  description: string
+  category: 'theme' | 'widget' | 'pet' | 'bundle'
+  enabled: boolean
+  chatCss?: string
+  chatHtml?: string
+  chatJs?: string
+  petCss?: string
+  petHtml?: string
+  petJs?: string
+  createdAt: number
+}
+
 export interface SecretaryState {
   reminders: SecretaryReminder[]
   todos: SecretaryTodoItem[]
   workflows: Record<WorkflowMacroId, WorkflowMacroConfig>
+  plugins: MusePlugin[]
   lastBriefDate?: string
 }
 
@@ -69,6 +85,7 @@ export interface ChatMessage {
   content: string
   attachments?: ChatAttachment[]
   pendingAction?: PendingSecretaryAction
+  appliedPlugin?: MusePlugin
   timestamp: number
   status?: 'pending' | 'streaming' | 'done' | 'error'
 }
@@ -99,6 +116,8 @@ export interface PetApi {
   setIgnoreMouseEvents: (ignore: boolean) => void
   close: () => void
   getAvatarState: () => Promise<AvatarState>
+  getPlugins: () => Promise<MusePlugin[]>
+  onPluginsUpdated: (callback: (plugins: MusePlugin[]) => void) => () => void
 }
 
 export type ProxyMode = 'system' | 'custom' | 'direct'
@@ -157,6 +176,11 @@ export interface ChatApi {
   toggleSecretaryTodo: (id: string) => Promise<SecretaryState>
   removeSecretaryTodo: (id: string) => Promise<SecretaryState>
   onSecretaryStateUpdated: (callback: (state: SecretaryState) => void) => () => void
+  // Self-Modifying UI & Live Plugin APIs
+  installPlugin: (plugin: Omit<MusePlugin, 'id' | 'createdAt'> & { id?: string }) => Promise<SecretaryState>
+  togglePlugin: (id: string) => Promise<SecretaryState>
+  removePlugin: (id: string) => Promise<SecretaryState>
+  resetAllPlugins: () => Promise<SecretaryState>
 }
 
 declare global {

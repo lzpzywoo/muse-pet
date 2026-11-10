@@ -126,6 +126,18 @@ const chatApi: ChatApi = {
       ipcRenderer.removeListener('secretary:state-updated', subscription)
     }
   },
+  installPlugin: (plugin) => {
+    return ipcRenderer.invoke('secretary:install-plugin', plugin)
+  },
+  togglePlugin: (id) => {
+    return ipcRenderer.invoke('secretary:toggle-plugin', id)
+  },
+  removePlugin: (id) => {
+    return ipcRenderer.invoke('secretary:remove-plugin', id)
+  },
+  resetAllPlugins: () => {
+    return ipcRenderer.invoke('secretary:reset-plugins')
+  },
 }
 
 contextBridge.exposeInMainWorld('chatApi', chatApi)

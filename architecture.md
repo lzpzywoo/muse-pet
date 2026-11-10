@@ -61,7 +61,8 @@ parent: muse-pet-goal
 
 ### 4. 本地工具桥与电脑小秘书系统 (Local Secretary Agent Bridge)
 - **前置意图协同与多模态桥接 (`src/main/local-secretary.ts`)**：
-  - **主动日程提醒与每日简报 (`startScheduler`, `generateDailyBriefing`)**：将定时闹钟、今日待办与工作流配置持久化保存在 `userData/secretary_state.json`。后台每 3 秒巡检到期提醒，触发 Windows 原生通知（`Notification`）并通过 `onReminderFired` 驱动 `PetWindow` 进入 `talking` 姿态主动冒泡提醒；每日首次唤醒或执行 `/brief` 时汇总今日待办、未读 Gmail 与系统健康度交由 Luna 播报。
+  - **主动日程提醒与每日简报 (`startScheduler`, `generateDailyBriefing`)**：将定时闹钟、今日待办、工作流与自定义界面插件持久化保存在 `userData/secretary_state.json`。后台每 3 秒巡检到期提醒，触发 Windows 原生通知（`Notification`）并通过 `onReminderFired` 驱动 `PetWindow` 进入 `talking` 姿态主动冒泡提醒；每日首次唤醒或执行 `/brief` 时汇总今日待办、未读 Gmail 与系统健康度交由 Luna 播报。
+  - **自进化界面主题与功能插件引擎 (`MusePlugin` · `synthesizePluginFromRequest` / `extractPluginFromText`)**：支持用户通过自然语言或 `/plugin` 指令让 Luna 实时修改终端与桌宠的主题外观（CSS，如赛博朋克霓虹、黑客帝国 Matrix、樱花微醺、复古琥珀、桌宠霓虹星环）或挂载实用交互小组件（HTML + JS + 受限 `sdk`，如灵动小闹钟与倒计时挂件、终端随手便签贴）。修改支持主题互斥切换与挂件并存，通过 `secretary:state-updated` 与 `plugin:list-updated` 双窗口实时热注入，并在对话流内附带【插件热加载与一键回滚控制卡片】及 `/reset-ui` 一键恢复出厂界面防改坏保障。
   - **四大一键场景工作流宏 (`executeWorkflowMacro`)**：内置 `work`（工作模式）、`focus`（深度专注番茄钟）、`meeting`（会议准备模式）、`off`（收工复盘锁屏模式）四套工作流，支持通过终端 `/settings` 面板或直接用自然语言对 Luna 下令（如“把 https://notion.so 加到我的工作模式里”）动态修改启动网址与本地应用。
   - **浏览器与 Gmail 邮件助手**：将自然语言或 `/gmail` 指令自动转化为 Gmail 高级搜索语法（如 `is:unread`, `from:...`, `newer_than:7d`），一方面调用 `shell.openExternal` 在系统默认浏览器直接打开筛选页，另一方面通过共享 `persist:secretary_browser` 分区的受控窗口提取邮件列表（或网页正文），自动构造 `[MUSE_LOCAL_CONTEXT]` 注入给 Luna 汇总提炼（并在本地消息同步时自动剥离隐藏上下文标签）。
   - **桌面视觉感知 (`/screen`)**：使用 Electron `desktopCapturer` 截取当前主屏幕 1080p 画面。截屏瞬间自动对当前可见的本应用窗口（`ChatWindow` 终端与 `PetWindow` 桌宠）开启 `setContentProtection(true)`（Windows DWM `WDA_EXCLUDEFROMCAPTURE`），在不闪烁、不隐藏窗口且不丢失输入焦点的前提下将终端与桌宠从截屏画面中完全剔除，仅截取干净的底层桌面内容；随后一方面在终端内联回显截图，另一方面通过 `DataTransfer` + React `__reactProps.onChange` 注入隐藏 `museWindow` 的 `<input type="file">`，赋予 Luna 原生多模态看屏能力。

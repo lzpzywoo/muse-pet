@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import type { AvatarAssets, AvatarState, PetBubblePayload } from '../../types'
+import type { AvatarAssets, AvatarState, MusePlugin, PetBubblePayload } from '../../types'
 import { Sparkles, MessageCircle, AlertCircle, RefreshCw, X, Bell } from 'lucide-react'
 
 const CUTOUT_SIZE = 360
@@ -152,11 +152,13 @@ export default function PetApp() {
   const [avatarState, setAvatarState] = useState<AvatarState>('idle')
   const [avatarAssets, setAvatarAssets] = useState<AvatarAssets | null>(null)
   const [bubble, setBubble] = useState<PetBubblePayload | null>(null)
+  const [plugins, setPlugins] = useState<MusePlugin[]>([])
   const [isBubbleHovered, setIsBubbleHovered] = useState(false)
   const [isHovered, setIsHovered] = useState(false)
   const [isBlinking, setIsBlinking] = useState(false)
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const petPluginDockRef = useRef<HTMLDivElement | null>(null)
   const defaultVideoRef = useRef<HTMLVideoElement | null>(null)
   const workingVideoRef = useRef<HTMLVideoElement | null>(null)
   const resumeVideoRef = useRef<HTMLVideoElement | null>(null)
@@ -200,6 +202,9 @@ export default function PetApp() {
     window.petApi?.getAvatarAssets().then((assets) => {
       if (assets) setAvatarAssets(assets)
     })
+    window.petApi?.getPlugins?.().then((list) => {
+      if (Array.isArray(list)) setPlugins(list)
+    })
 
     const unsubscribeState = window.petApi?.onSyncAvatarState((newState) => {
       setAvatarState(newState)
@@ -210,13 +215,56 @@ export default function PetApp() {
     const unsubscribeBubble = window.petApi?.onSpeechBubble((payload) => {
       setBubble(payload)
     })
+    const unsubscribePlugins = window.petApi?.onPluginsUpdated?.((list) => {
+      if (Array.isArray(list)) setPlugins(list)
+    })
 
     return () => {
       unsubscribeState?.()
       unsubscribeAssets?.()
       unsubscribeBubble?.()
+      unsubscribePlugins?.()
     }
   }, [])
+
+  // Execute PetWindow plugin widgets (petHtml + petJs) when plugins update
+  useEffect(() => {
+    const dock = petPluginDockRef.current
+    if (!dock) return
+    dock.innerHTML = ''
+    const cleanups: Array<() => void> = []
+
+    const enabledWidgets = plugins.filter((p) => p.enabled && (p.petHtml || p.petJs))
+    for (const plg of enabledWidgets) {
+      const container = document.createElement('div')
+      container.setAttribute('data-pet-plugin-id', plg.id)
+      if (plg.petHtml) {
+        container.innerHTML = plg.petHtml
+      }
+      dock.appendChild(container)
+      if (plg.petJs) {
+        try {
+          const fn = new Function('root', plg.petJs)
+          const cleanup = fn(container)
+          if (typeof cleanup === 'function') {
+            cleanups.push(cleanup)
+          }
+        } catch (err) {
+          console.warn('Pet plugin JS error:', err)
+        }
+      }
+    }
+
+    return () => {
+      cleanups.forEach((fn) => {
+        try {
+          fn()
+        } catch {
+          // ignore
+        }
+      })
+    }
+  }, [plugins])
 
   // Auto-hide speech bubble 10s after reply finishes (unless hovered)
   useEffect(() => {
@@ -326,6 +374,10 @@ export default function PetApp() {
   const defaultVideoUrl = avatarAssets?.videos?.default
   const workingVideoUrl = avatarAssets?.videos?.working || defaultVideoUrl
   const resumeVideoUrl = avatarAssets?.videos?.resume || defaultVideoUrl
+  const combinedPetCss = plugins
+    .filter((p) => p.enabled && p.petCss)
+    .map((p) => `/* Plugin: ${p.name} */\n${p.petCss}`)
+    .join('\n')
 
   return (
     <div
@@ -333,6 +385,7 @@ export default function PetApp() {
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
+      {combinedPetCss && <style id="muse-pet-plugins-css">{combinedPetCss}</style>}
       {/* Hidden media sources for offscreen cutout processing */}
       {hasMuseAvatar && (
         <div className="hidden" aria-hidden="true">
@@ -396,7 +449,7 @@ export default function PetApp() {
           className="no-drag relative z-30 mb-1.5 w-[256px] max-w-[256px] cursor-pointer group/bubble animate-in fade-in slide-in-from-bottom-2 duration-200"
         >
           <div
-            className={`relative rounded-2xl px-3.5 py-2.5 bg-[#080b12]/95 backdrop-blur-xl border shadow-[0_14px_32px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.22)] transition-all ${
+            className={`pet-speech-bubble relative rounded-2xl px-3.5 py-2.5 bg-[#080b12]/95 backdrop-blur-xl border shadow-[0_14px_32px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.22)] transition-all ${
               bubble.status === 'error'
                 ? 'border-rose-400/50 text-rose-100'
                 : bubble.status === 'thinking'
@@ -468,6 +521,13 @@ export default function PetApp() {
           </div>
         </div>
       )}
+
+      {/* Pet Plugin Widget Dock (e.g., mini clock pill above/beside Luna) */}
+      <div
+        ref={petPluginDockRef}
+        id="muse-pet-plugin-dock"
+        className="no-drag relative z-20 mb-1 flex flex-col items-center gap-1"
+      />
 
       {/* Pet Interactive Container */}
       <div

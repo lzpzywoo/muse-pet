@@ -6,6 +6,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { pathToFileURL } from 'url'
 import {
+  MusePlugin,
   PendingSecretaryAction,
   SecretaryReminder,
   SecretaryState,
@@ -96,6 +97,7 @@ export class LocalSecretary {
     reminders: [],
     todos: [],
     workflows: JSON.parse(JSON.stringify(DEFAULT_WORKFLOWS)),
+    plugins: [],
   }
   private schedulerTimer: NodeJS.Timeout | null = null
 
@@ -116,6 +118,7 @@ export class LocalSecretary {
             ...JSON.parse(JSON.stringify(DEFAULT_WORKFLOWS)),
             ...(raw.workflows || {}),
           },
+          plugins: Array.isArray(raw.plugins) ? raw.plugins : [],
           lastBriefDate: raw.lastBriefDate,
         }
       }
@@ -1091,5 +1094,510 @@ export class LocalSecretary {
       ].join('\n\n'),
       pendingAction: lockAction,
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 6. Self-Modifying UI & Live Plugin Engine
+  // ---------------------------------------------------------------------------
+
+  public getPlugins(): MusePlugin[] {
+    return this.state.plugins || []
+  }
+
+  public installOrUpdatePlugin(
+    input: Omit<MusePlugin, 'id' | 'createdAt'> & { id?: string }
+  ): MusePlugin {
+    const existingIdx = this.state.plugins.findIndex(
+      (p) => (input.id && p.id === input.id) || p.name === input.name
+    )
+    const id =
+      existingIdx >= 0
+        ? this.state.plugins[existingIdx].id
+        : input.id || `plg-${crypto.randomBytes(4).toString('hex')}`
+
+    const plugin: MusePlugin = {
+      id,
+      name: input.name || '未命名界面插件',
+      description: input.description || '由 Luna 动态生成的界面/功能扩展插件',
+      category: input.category || 'bundle',
+      enabled: input.enabled !== undefined ? input.enabled : true,
+      chatCss: input.chatCss,
+      chatHtml: input.chatHtml,
+      chatJs: input.chatJs,
+      petCss: input.petCss,
+      petHtml: input.petHtml,
+      petJs: input.petJs,
+      createdAt: existingIdx >= 0 ? this.state.plugins[existingIdx].createdAt : Date.now(),
+    }
+
+    // If installing an enabled theme plugin, disable previous theme plugins to prevent style clash
+    if (plugin.enabled && plugin.category === 'theme') {
+      this.state.plugins = this.state.plugins.map((p) =>
+        p.category === 'theme' && p.id !== plugin.id ? { ...p, enabled: false } : p
+      )
+    }
+
+    if (existingIdx >= 0) {
+      this.state.plugins[existingIdx] = plugin
+    } else {
+      this.state.plugins.unshift(plugin)
+    }
+
+    this.saveState()
+    return plugin
+  }
+
+  public togglePlugin(id: string): SecretaryState {
+    const target = this.state.plugins.find((p) => p.id === id)
+    if (!target) return this.state
+    const nextEnabled = !target.enabled
+
+    this.state.plugins = this.state.plugins.map((p) => {
+      if (p.id === id) {
+        return { ...p, enabled: nextEnabled }
+      }
+      if (nextEnabled && target.category === 'theme' && p.category === 'theme') {
+        return { ...p, enabled: false }
+      }
+      return p
+    })
+    this.saveState()
+    return this.state
+  }
+
+  public removePlugin(id: string): SecretaryState {
+    this.state.plugins = this.state.plugins.filter((p) => p.id !== id)
+    this.saveState()
+    return this.state
+  }
+
+  public resetAllPlugins(): SecretaryState {
+    this.state.plugins = []
+    this.saveState()
+    return this.state
+  }
+
+  /**
+   * Extracts a ```muse-plugin ... ``` or JSON plugin block from Luna's reply
+   */
+  public extractPluginFromText(text: string): MusePlugin | null {
+    const blockMatch =
+      text.match(/```(?:muse-plugin|json)\s*\n([\s\S]*?)```/i) ||
+      text.match(/\{[\s\S]*?"(?:chatCss|chatHtml|petCss|petHtml)"[\s\S]*?\}/i)
+    if (!blockMatch) return null
+    const rawJson = (blockMatch[1] || blockMatch[0]).trim()
+    try {
+      const parsed = JSON.parse(rawJson)
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        (parsed.chatCss || parsed.chatHtml || parsed.chatJs || parsed.petCss || parsed.petHtml)
+      ) {
+        return this.installOrUpdatePlugin({
+          id: parsed.id,
+          name: parsed.name || 'Luna 自定义界面扩展',
+          description: parsed.description || '由 Luna 实时生成的界面与功能插件',
+          category: parsed.category || (parsed.chatHtml || parsed.petHtml ? 'widget' : 'theme'),
+          enabled: true,
+          chatCss: parsed.chatCss,
+          chatHtml: parsed.chatHtml,
+          chatJs: parsed.chatJs,
+          petCss: parsed.petCss,
+          petHtml: parsed.petHtml,
+          petJs: parsed.petJs,
+        })
+      }
+    } catch {
+      // ignore invalid JSON
+    }
+    return null
+  }
+
+  /**
+   * Synthesizes a live, functional MusePlugin (themes, interactive alarm clock, sticky notes, pet aura, etc.)
+   * from natural language requests so UI self-modification always succeeds immediately.
+   */
+  public synthesizePluginFromRequest(rawRequest: string): MusePlugin {
+    const text = rawRequest.trim()
+
+    // 1. Mini Alarm Clock / Countdown Timer Widget (小闹钟 / 倒计时器 / 秒表)
+    if (/(闹钟|计时器|倒计时|秒表|番茄面板|时钟组件|alarm|timer)/i.test(text)) {
+      return this.installOrUpdatePlugin({
+        id: 'plg-widget-mini-alarm',
+        name: '⏰ 灵动小闹钟与倒计时挂件',
+        description: '在终端顶部与桌宠旁挂载实时时钟与交互式小闹钟（支持快捷倒计时、响铃与桌宠冒泡提醒）',
+        category: 'widget',
+        enabled: true,
+        chatCss: `
+          .muse-alarm-widget {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 8px 14px;
+            background: linear-gradient(90deg, rgba(14, 165, 233, 0.14), rgba(139, 92, 246, 0.14));
+            border-bottom: 1px solid rgba(56, 189, 248, 0.28);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: #e2e8f0;
+          }
+          .muse-alarm-clock-now {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #7dd3fc;
+            font-weight: 600;
+          }
+          .muse-alarm-controls {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+          }
+          .muse-alarm-btn {
+            padding: 3px 8px;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            color: #f1f5f9;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.15s;
+          }
+          .muse-alarm-btn:hover {
+            background: rgba(56, 189, 248, 0.25);
+            border-color: rgba(56, 189, 248, 0.55);
+          }
+          .muse-alarm-btn.active {
+            background: rgba(16, 185, 129, 0.28);
+            border-color: rgba(52, 211, 153, 0.65);
+            color: #a7f3d0;
+          }
+          .muse-alarm-input {
+            background: rgba(0, 0, 0, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 6px;
+            padding: 2px 7px;
+            color: #fff;
+            font-size: 11px;
+            width: 110px;
+            outline: none;
+          }
+          .muse-alarm-countdown {
+            font-weight: 700;
+            color: #fcd34d;
+            min-width: 54px;
+            text-align: center;
+          }
+        `,
+        chatHtml: `
+          <div class="muse-alarm-widget">
+            <div class="muse-alarm-clock-now">
+              <span>🕒</span>
+              <span id="muse-live-clock">--:--:--</span>
+            </div>
+            <div class="muse-alarm-controls">
+              <input id="muse-alarm-label" class="muse-alarm-input" type="text" placeholder="闹钟提醒事项..." value="起来活动喝水" />
+              <button class="muse-alarm-btn" data-mins="1">1m</button>
+              <button class="muse-alarm-btn" data-mins="5">5m</button>
+              <button class="muse-alarm-btn" data-mins="15">15m</button>
+              <button class="muse-alarm-btn" data-mins="25">25m</button>
+              <span id="muse-alarm-cd" class="muse-alarm-countdown">未定时</span>
+              <button id="muse-alarm-stop" class="muse-alarm-btn" style="display:none;color:#fda4af;">停止</button>
+            </div>
+          </div>
+        `,
+        chatJs: `
+          (function() {
+            const clockEl = root.querySelector('#muse-live-clock');
+            const cdEl = root.querySelector('#muse-alarm-cd');
+            const stopBtn = root.querySelector('#muse-alarm-stop');
+            const labelInput = root.querySelector('#muse-alarm-label');
+            let targetDue = Number(sdk.storage.get('alarm_due') || 0);
+            let targetTitle = sdk.storage.get('alarm_title') || '小闹钟时间到啦！';
+
+            function tick() {
+              const now = new Date();
+              if (clockEl) {
+                clockEl.textContent = now.toLocaleTimeString('zh-CN', { hour12: false });
+              }
+              if (targetDue > 0) {
+                const remainSec = Math.max(0, Math.ceil((targetDue - Date.now()) / 1000));
+                const mm = String(Math.floor(remainSec / 60)).padStart(2, '0');
+                const ss = String(remainSec % 60).padStart(2, '0');
+                if (cdEl) cdEl.textContent = '⏳ ' + mm + ':' + ss;
+                if (stopBtn) stopBtn.style.display = 'inline-block';
+                if (remainSec <= 0) {
+                  targetDue = 0;
+                  sdk.storage.set('alarm_due', '');
+                  if (cdEl) cdEl.textContent = '🔔 已响铃!';
+                  if (stopBtn) stopBtn.style.display = 'none';
+                  sdk.playBeep();
+                  sdk.notify('⏰ [小闹钟响铃] ' + targetTitle);
+                }
+              }
+            }
+            const timer = setInterval(tick, 1000);
+            tick();
+
+            root.querySelectorAll('[data-mins]').forEach(btn => {
+              btn.addEventListener('click', () => {
+                const mins = Number(btn.getAttribute('data-mins') || 5);
+                targetTitle = (labelInput && labelInput.value.trim()) || '小闹钟提醒';
+                targetDue = Date.now() + mins * 60 * 1000;
+                sdk.storage.set('alarm_due', String(targetDue));
+                sdk.storage.set('alarm_title', targetTitle);
+                sdk.addReminder(targetTitle, mins);
+                sdk.playBeep();
+                tick();
+              });
+            });
+
+            if (stopBtn) {
+              stopBtn.addEventListener('click', () => {
+                targetDue = 0;
+                sdk.storage.set('alarm_due', '');
+                if (cdEl) cdEl.textContent = '已取消';
+                stopBtn.style.display = 'none';
+              });
+            }
+            return () => clearInterval(timer);
+          })();
+        `,
+        petCss: `
+          .muse-pet-clock-pill {
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: rgba(7, 9, 15, 0.86);
+            border: 1px solid rgba(56, 189, 248, 0.45);
+            color: #bae6fd;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.45);
+          }
+        `,
+        petHtml: `<div class="muse-pet-clock-pill" id="muse-pet-mini-clock">⏰ --:--</div>`,
+        petJs: `
+          (function() {
+            const el = root.querySelector('#muse-pet-mini-clock');
+            const update = () => {
+              if (el) el.textContent = '⏰ ' + new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+            };
+            update();
+            const t = setInterval(update, 1000);
+            return () => clearInterval(t);
+          })();
+        `,
+      })
+    }
+
+    // 2. Sticky Notes / Memo Pad Widget (便签 / 备忘贴 / 记事本组件)
+    if (/(便签|备忘贴|记事贴|小黑板|速记|sticky|note)/i.test(text)) {
+      return this.installOrUpdatePlugin({
+        id: 'plg-widget-sticky-note',
+        name: '📝 终端随手便签贴',
+        description: '在终端顶部挂载可随时编辑、自动持久化的随手速记便签栏',
+        category: 'widget',
+        enabled: true,
+        chatCss: `
+          .muse-sticky-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 14px;
+            background: rgba(251, 191, 36, 0.10);
+            border-bottom: 1px solid rgba(251, 191, 36, 0.28);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+          }
+          .muse-sticky-input {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.35);
+            border: 1px solid rgba(251, 191, 36, 0.3);
+            border-radius: 6px;
+            padding: 3px 8px;
+            color: #fef3c7;
+            font-size: 11.5px;
+            outline: none;
+          }
+        `,
+        chatHtml: `
+          <div class="muse-sticky-bar">
+            <span style="color:#fbbf24;font-weight:600;">📝 随手便签:</span>
+            <input id="muse-sticky-text" class="muse-sticky-input" placeholder="输入随时要记住的灵感或备忘（自动保存）..." />
+          </div>
+        `,
+        chatJs: `
+          (function() {
+            const inp = root.querySelector('#muse-sticky-text');
+            if (!inp) return;
+            inp.value = sdk.storage.get('sticky_note_val') || '';
+            inp.addEventListener('input', () => {
+              sdk.storage.set('sticky_note_val', inp.value);
+            });
+          })();
+        `,
+      })
+    }
+
+    // 3. Pet Aura / Halo / Decoration (桌宠光环 / 桌宠特效 / 气泡美化)
+    if (/(桌宠|宠物|立绘|光环|特效|呼吸灯|气泡样式)/i.test(text) && !/终端/i.test(text)) {
+      return this.installOrUpdatePlugin({
+        id: 'plg-pet-neon-aura',
+        name: '✨ 桌宠霓虹星环与流光气泡',
+        description: '为桌面上的 Luna 增加动态呼吸能量星环与流光渐变冒泡卡片',
+        category: 'pet',
+        enabled: true,
+        petCss: `
+          canvas {
+            filter: drop-shadow(0 0 16px rgba(56, 189, 248, 0.55)) drop-shadow(0 0 28px rgba(168, 85, 247, 0.35)) !important;
+          }
+          .pet-speech-bubble {
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(49, 16, 66, 0.94)) !important;
+            border: 1px solid rgba(232, 121, 249, 0.55) !important;
+            box-shadow: 0 12px 32px rgba(168, 85, 247, 0.35) !important;
+          }
+        `,
+      })
+    }
+
+    // 4. Terminal & Pet Theme Customizations (赛博朋克 / 黑客帝国绿 / 樱花粉 / 复古琥珀 / 极光蓝紫)
+    if (/(黑客帝国|matrix|绿|荧光绿|黑绿)/i.test(text)) {
+      return this.installOrUpdatePlugin({
+        id: 'plg-theme-matrix',
+        name: '🟢 Matrix 黑客帝国终端主题',
+        description: '经典黑客帝国荧光绿 CRT 终端配色与扫描线光效',
+        category: 'theme',
+        enabled: true,
+        chatCss: `
+          .liquid-glass-terminal {
+            background: linear-gradient(180deg, rgba(2, 14, 6, 0.98) 0%, rgba(1, 8, 3, 0.99) 100%) !important;
+            border: 1px solid rgba(34, 197, 94, 0.55) !important;
+            box-shadow: 0 0 36px rgba(34, 197, 94, 0.22), inset 0 1px 0 rgba(74, 222, 128, 0.35) !important;
+          }
+          .liquid-glass-header, .liquid-glass-prompt {
+            background: rgba(4, 24, 10, 0.92) !important;
+            border-color: rgba(34, 197, 94, 0.3) !important;
+          }
+          .liquid-glass-pill {
+            border-color: rgba(34, 197, 94, 0.35) !important;
+            color: #86efac !important;
+          }
+          .liquid-glass-terminal * {
+            border-color: rgba(34, 197, 94, 0.24);
+          }
+        `,
+        petCss: `
+          .pet-speech-bubble {
+            background: rgba(2, 18, 7, 0.96) !important;
+            border: 1px solid rgba(34, 197, 94, 0.6) !important;
+            color: #bbf7d0 !important;
+          }
+        `,
+      })
+    }
+
+    if (/(樱花|粉|pink|sakura|少女|可爱)/i.test(text)) {
+      return this.installOrUpdatePlugin({
+        id: 'plg-theme-sakura',
+        name: '🌸 樱花霓虹微醺主题',
+        description: '深邃暗夜樱花粉紫渐变边框与柔和星光呼吸灯效',
+        category: 'theme',
+        enabled: true,
+        chatCss: `
+          .liquid-glass-terminal {
+            background: linear-gradient(165deg, rgba(26, 11, 24, 0.98) 0%, rgba(15, 7, 18, 0.99) 100%) !important;
+            border: 1px solid rgba(244, 114, 182, 0.55) !important;
+            box-shadow: 0 0 40px rgba(236, 72, 153, 0.25), inset 0 1px 0 rgba(251, 207, 232, 0.35) !important;
+          }
+          .liquid-glass-header, .liquid-glass-prompt {
+            background: rgba(38, 14, 34, 0.9) !important;
+            border-color: rgba(244, 114, 182, 0.3) !important;
+          }
+          .liquid-glass-pill {
+            background: rgba(244, 114, 182, 0.14) !important;
+            border-color: rgba(244, 114, 182, 0.4) !important;
+            color: #fbcfe8 !important;
+          }
+        `,
+        petCss: `
+          canvas {
+            filter: drop-shadow(0 0 14px rgba(244, 114, 182, 0.45)) !important;
+          }
+          .pet-speech-bubble {
+            background: rgba(31, 11, 27, 0.95) !important;
+            border: 1px solid rgba(244, 114, 182, 0.6) !important;
+          }
+        `,
+      })
+    }
+
+    if (/(琥珀|复古|橙|金|amber|retro|warm)/i.test(text)) {
+      return this.installOrUpdatePlugin({
+        id: 'plg-theme-amber-crt',
+        name: '🟠 复古琥珀流金终端主题',
+        description: '经典暖金琥珀色高对比度护眼终端主题',
+        category: 'theme',
+        enabled: true,
+        chatCss: `
+          .liquid-glass-terminal {
+            background: linear-gradient(180deg, rgba(20, 13, 4, 0.98) 0%, rgba(12, 8, 2, 0.99) 100%) !important;
+            border: 1px solid rgba(245, 158, 11, 0.55) !important;
+            box-shadow: 0 0 36px rgba(245, 158, 11, 0.2), inset 0 1px 0 rgba(253, 230, 138, 0.3) !important;
+          }
+          .liquid-glass-header, .liquid-glass-prompt {
+            background: rgba(32, 20, 6, 0.92) !important;
+            border-color: rgba(245, 158, 11, 0.3) !important;
+          }
+          .liquid-glass-pill {
+            background: rgba(245, 158, 11, 0.14) !important;
+            border-color: rgba(245, 158, 11, 0.4) !important;
+            color: #fde68a !important;
+          }
+        `,
+        petCss: `
+          .pet-speech-bubble {
+            background: rgba(24, 15, 4, 0.96) !important;
+            border: 1px solid rgba(245, 158, 11, 0.6) !important;
+          }
+        `,
+      })
+    }
+
+    // Default Theme: Cyberpunk Neon Synthwave (赛博朋克霓虹极光主题)
+    return this.installOrUpdatePlugin({
+      id: 'plg-theme-cyberpunk',
+      name: '⚡ 赛博朋克霓虹电光主题',
+      description: '赛博电光青与霓虹紫双色流光边框、深空蓝紫基底与桌宠能量光晕',
+      category: 'theme',
+      enabled: true,
+      chatCss: `
+        .liquid-glass-terminal {
+          background: radial-gradient(circle at top right, rgba(88, 28, 135, 0.42), transparent 55%),
+                      radial-gradient(circle at bottom left, rgba(6, 182, 212, 0.28), transparent 55%),
+                      rgba(8, 7, 20, 0.98) !important;
+          border: 1px solid rgba(34, 211, 238, 0.6) !important;
+          box-shadow: 0 0 38px rgba(168, 85, 247, 0.28), 0 0 16px rgba(34, 211, 238, 0.25) !important;
+        }
+        .liquid-glass-header, .liquid-glass-prompt {
+          background: linear-gradient(90deg, rgba(15, 12, 36, 0.92), rgba(32, 13, 52, 0.92)) !important;
+          border-color: rgba(34, 211, 238, 0.35) !important;
+        }
+        .liquid-glass-pill {
+          background: rgba(34, 211, 238, 0.13) !important;
+          border-color: rgba(217, 70, 239, 0.45) !important;
+          color: #a5f3fc !important;
+        }
+      `,
+      petCss: `
+        canvas {
+          filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.5)) drop-shadow(0 0 24px rgba(217, 70, 239, 0.35)) !important;
+        }
+        .pet-speech-bubble {
+          background: linear-gradient(135deg, rgba(12, 10, 30, 0.96), rgba(40, 12, 60, 0.95)) !important;
+          border: 1px solid rgba(34, 211, 238, 0.6) !important;
+        }
+      `,
+    })
   }
 }
