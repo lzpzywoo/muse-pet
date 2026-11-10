@@ -1,0 +1,78 @@
+---
+id: muse-pet-architecture
+type: architecture-design
+status: active
+title: Muse Pet — 系统架构与多进程设计
+parent: muse-pet-goal
+---
+
+# Muse Pet — 系统架构与多进程设计
+
+> Electron 多窗口架构、主进程网络反向代理与 Meta Muse Avatar 状态联动驱动体系。
+
+## Drivers
+
+- **桌面无感与极速交互**：宠物需 7x24h 常驻桌面角落，背景完全透明且低功耗；对话面板需要毫秒级唤醒，呼出与收起不阻塞宠物动效。
+- **Meta 鉴权与反向代理**：`muse.ai` 依赖 Meta 账号体系与复杂 Cookie/Session，需规避 Web 端跨域和防逆向检测，保证通信稳定性。
+- **状态联动**：对话交互与宠物形象深度绑定（提问时宠物进入思考态、流式返回时宠物进入说话态、空闲时随机呼吸微动作）。
+
+## Architecture Topology
+
+```
++------------------------------------------------------------------------+
+|                          Electron Main Process                         |
+|  +--------------------+  +----------------------+  +----------------+  |
+|  | Window Manager     |  | Session & Auth Store |  | Muse API Client|  |
+|  | - PetWindow        |  | - safeStorage        |  | - Reverse Proxy|  |
+|  | - ChatWindow       |  | - Cookie Interceptor |  | - SSE Stream   |  |
+|  | - AuthWindow       |  +----------------------+  +----------------+  |
+|  +--------------------+  +------------------------------------------+  |
+|  | Tray & Hotkey Hub  |  | IPC Event Router & State Synchronizer    |  |
++--+--------------------+--+------------------------------------------+--+
+             |                                    |
+             | IPC (contextBridge)                | IPC (contextBridge)
+             v                                    v
++-----------------------------+      +-----------------------------------+
+|   Pet Renderer (React/Vite) |      |    Chat Renderer (React/Vite)     |
+| - Meta Avatar Player/Stream |      | - Streaming Markdown Conversation |
+| - State Machine (Idle/Talk) | <--> | - Session History & Model Toggle  |
+| - Drag & Click-through Hit  |      | - Fast Hotkey Panel Focus         |
++-----------------------------+      +-----------------------------------+
+```
+
+## Decisions
+
+### 1. 多窗口隔离模型 (Pet Window + Chat Window + Auth Window)
+- **Pet Window**：尺寸为 `280 × 320`，设置 `transparent: true`, `frame: false`, `alwaysOnTop: true`, `skipTaskbar: true`。下半部渲染透明抠图后的 Meta Avatar 立绘及未读消息角标，上半部预留空间用于渲染 **实时冒泡回复气泡（Speech Bubble）**，在 Muse 思考、流式回答或收到新消息时直接浮现冒泡文案提醒，点击气泡或桌宠可一键呼出终端。
+- **Chat Window (Spotlight / Liquid Glass Terminal HUD)**：宽幅独立窗口（`640 × 560`），默认隐藏。全局快捷键（`Alt + Space`）或点击桌面宠物触发显隐，在主屏幕中上方黄金视觉位（水平居中、距顶约 16%）弹出。默认采用 **100% 不透明曜石纯黑（Obsidian Solid）** 基底搭配 Apple Liquid Glass 顶部高光折射边（避免底层桌面干扰阅读），并支持在 `/settings`（或通过 `/solid`、`/glass`、`/theme` 命令与不透明度滑块 `45%~100%`）自由切换并持久化窗口材质与透明度。支持 `Esc` 键一键收起、macOS 红黄绿交通灯控制、`luna ❯` 终端提示符、`/sync` 云端历史同步与 `↑`/`↓` 历史命令回溯。
+- **Auth Window**：独立的临时 Webview 窗口，仅在用户首次登录或凭证过期时调出，加载 `https://muse.ai`。统一伪装标准 Chrome User-Agent 规避反爬，监听 `session.fromPartition('persist:meta_muse').webRequest.onCompleted`，自动提取 Meta 核心认证 Cookie，保存后立即自毁；若加载失败注入带一键重试的故障排查诊断页。
+- **Proxy Manager**：统一代理调度体系，应用启动时默认激活 Windows 系统代理（`mode: 'system'`），支持自定义 fixed_servers 代理规则并提供实时测速与手动 Cookie 录入兜底。
+
+### 2. 主进程通信桥接与会话管理 (Browser-in-Browser Relay & Session Store)
+- **通信收口（隐藏 BrowserWindow 桥接）**：`muse.ai` 采用 Meta Hatch 架构（基于 `/api/hatch/*` 与 `Noise_XX_25519` 加密 WebSocket 通道及 TLS/JA3 指纹校验）。主进程 `MuseClient` 维护一个共享 `persist:meta_muse` 分区的隐藏 `BrowserWindow` 实例，直接利用真实 Chromium 环境与页面内置的 Hatch Composer/Noise 通道收发消息，避免外部请求被风控拦截。
+- **防风控与协议伪装**：`AuthWindow` 与隐藏 `museWindow` 共享 `persist:meta_muse` 分区并注入标准桌面 Chrome User-Agent，仅当检测到核心登录态 Cookie `hatch_sess` 时判定鉴权成功。
+- **加密存储**：Meta 登录会话与 Cookie 在 `app.whenReady()` 之后使用 Electron 原生 `safeStorage` 进行操作系统级别的对称加密存储与恢复，杜绝明文凭证泄漏与启动时序导致的解密失败。
+- **流式分发与云端双向同步**：主进程从隐藏 `museWindow` 实时轮询新增的助手回复增量文本，一边向下游转发至 Chat 渲染进程，一边向 Pet 渲染进程同步推送 `pet:speech-bubble` 实时冒泡文案与未读角标提醒；同时自动从 `muse.ai` 的 `[data-message-item="true"]` 节点提取并后台监听云端会话历史，持久化至本地 `userData/chat_history.json` 并通过 `chat:messages-synced` 与 `ChatWindow` 保持双向同步。
+
+### 3. Meta Avatar 状态驱动与本地缓存机制
+- 建立状态机：`IDLE`（待机呼吸）、`LISTENING`（面板打开等待输入）、`THINKING`（正在向 Muse 请求）、`TALKING`（正在流式接收文本并合成口型/动作）、`ERROR`（异常或断网提示）。
+- **多状态视频提取与持久化缓存**：`MuseClient` 从隐藏 `museWindow` 的 `video[data-hatch-avatar-layer]` 及其 React Fiber 状态中提取用户的专属虚拟形象高清静态图（WebP）与多状态 720p 循环视频（`default`、`working`、`resume`）及智能体名称（如 `Luna`），持久化缓存至 `userData/avatar_cache/`，下次启动无需等待网络即可秒级渲染。
+- **双窗口同步呈现与透明人物抠图**：`PetWindow` 采用隐藏多状态 `<video>` + 30fps `<canvas>` 实时四边界连通域洪水填充（Edge-Connected Flood Fill）与边缘反算去白边（Color Unmixing），将视频中的纯白背景完全抠除为透明（`alpha = 0`）同时完整保留人物眼白与高光细节，以无外框的纯人物立绘悬浮展示；`ChatWindow` 同步使用提取到的静态头像与智能体名称替换标题栏与消息列表图标。
+
+### 4. 代码结构与工程划分
+- `src/main/`：主进程代码（`app.ts`, `window-manager.ts`, `muse-client.ts`, `session-store.ts`, `ipc-handlers.ts`, `tray.ts`）。
+- `src/preload/`：安全 Preload 脚本（`pet.ts`, `chat.ts`），通过 `contextBridge.exposeInMainWorld` 暴露受限且类型完备的 API。
+- `src/renderer/`：React 18 + Vite + Tailwind CSS 多页工程（`pet/` 入口与 `chat/` 入口，共享 `components/` 与 `types/`）。
+
+## Invariants
+
+1. **零直接 Node 权限**：所有渲染进程强制配置 `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`。
+2. **凭据安全**：禁止向任何渲染进程暴露原始 Session Token 与 Cookie 明文，前端仅获得登录态布尔值与用户基础 Profile（头像 URL、用户名）。
+3. **单例应用约束**：采用 `app.requestSingleInstanceLock()` 保证全局仅运行一个客户端实例，重复启动时聚焦现有宠物窗口。
+4. **低能耗常驻**：待机无用户交互时，宠物窗口渲染刷新率自动降频，禁止后台死循环轮询。
+
+## Out of scope
+
+- 暂不引入跨平台原生 C++ 扩展，优先依赖 Electron 纯标准 API 保持轻量与易维护。
+- 暂不实现离线本地大模型推理，所有智能生成均由 Meta Muse 云端负责。
+
