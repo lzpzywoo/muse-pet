@@ -136,6 +136,15 @@ const chatApi: ChatApi = {
   resetAllPlugins: () => {
     return ipcRenderer.invoke('secretary:reset-plugins')
   },
+  getCloudSnapshot: (forceRefresh?: boolean) => {
+    return ipcRenderer.invoke('cloud:get-snapshot', Boolean(forceRefresh))
+  },
+  readCloudFile: (fileName: string) => {
+    return ipcRenderer.invoke('cloud:read-file', fileName)
+  },
+  openCloudConsole: (target) => {
+    return ipcRenderer.invoke('cloud:open-console', target || 'main')
+  },
 }
 
 contextBridge.exposeInMainWorld('chatApi', chatApi)

@@ -763,6 +763,19 @@ export function registerIpcHandlers(
     return windowManager.resetChatBounds()
   })
 
+  // Muse Cloud Hub & Native Console
+  ipcMain.handle('cloud:get-snapshot', async (_event, forceRefresh?: boolean) => {
+    return await museClient.fetchCloudSnapshot(Boolean(forceRefresh))
+  })
+
+  ipcMain.handle('cloud:read-file', async (_event, fileName: string) => {
+    return await museClient.readCloudFile(String(fileName || 'MEMORY.md'))
+  })
+
+  ipcMain.handle('cloud:open-console', async (_event, target?: any) => {
+    return await museClient.openCloudConsole(target || 'main')
+  })
+
   // App quit
   ipcMain.on('app:quit', () => {
     app.quit()
