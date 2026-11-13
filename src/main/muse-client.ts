@@ -696,16 +696,36 @@ export class MuseClient {
           if (actBtn) actBtn.click()
           await new Promise(r => setTimeout(r, 250))
 
-          const scheduledTasks = Array.from(
+          const seenTasks = new Set()
+          const scheduledTasks = []
+          for (const btn of Array.from(
             document.querySelectorAll('[data-pel-click="status_task_context_menu_open"]')
-          ).map(btn => {
-            const row = btn.parentElement
-            const lines = (row ? row.innerText : '').split(NL).map(s => s.trim()).filter(Boolean)
-            return {
-              title: lines[0] || '',
-              schedule: lines.slice(1).join(' · ') || ''
+          )) {
+            // Prefer the nearest dedicated row; fall back to the button itself so shared parents
+            // do not concatenate every task into one schedule string.
+            const row =
+              btn.closest('[data-pel-click="status_task_context_menu_open"]')?.parentElement ||
+              btn.parentElement ||
+              btn
+            const ownLines = (btn.innerText || '').split(NL).map(s => s.trim()).filter(Boolean)
+            const rowLines = (row.innerText || '').split(NL).map(s => s.trim()).filter(Boolean)
+            // When the parent contains many tasks, keep only the lines that belong to this button.
+            let lines = ownLines
+            if (ownLines.length === 0) {
+              lines = rowLines.slice(0, 2)
+            } else if (rowLines.length > ownLines.length + 2) {
+              const idx = rowLines.indexOf(ownLines[0])
+              lines = idx >= 0 ? rowLines.slice(idx, idx + Math.max(ownLines.length, 2)) : ownLines
+            } else {
+              lines = rowLines.length ? rowLines : ownLines
             }
-          }).filter(t => t.title)
+            const title = lines[0] || ''
+            const schedule = lines.slice(1).join(' · ') || ''
+            const key = title + '|' + schedule
+            if (!title || seenTasks.has(key)) continue
+            seenTasks.add(key)
+            scheduledTasks.push({ title, schedule })
+          }
 
           const activities = []
           const dayToggles = Array.from(

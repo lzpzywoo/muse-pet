@@ -5,6 +5,8 @@ import type {
   ProxyConfig,
   NetworkTestResult,
   SecretaryState,
+  MuseCloudSnapshot,
+  MuseCloudConsoleTarget,
 } from '../../types'
 import {
   Square,
@@ -28,6 +30,14 @@ import {
   Mail,
   Cpu,
   Trash2,
+  Cloud,
+  RefreshCw,
+  FileText,
+  Folder,
+  Clock,
+  Target,
+  Lightbulb,
+  Shirt,
 } from 'lucide-react'
 
 // Lightweight Markdown & Code Block Formatter in Liquid Glass Terminal style
@@ -208,6 +218,49 @@ export default function ChatApp() {
 
   // Plugin state
   const [secretaryState, setSecretaryState] = useState<SecretaryState | null>(null)
+
+  // Muse Cloud Hub (/cloud) state
+  const [showCloudHub, setShowCloudHub] = useState(false)
+  const [cloudTab, setCloudTab] = useState<'activity' | 'goals' | 'files' | 'console'>('activity')
+  const [cloudSnapshot, setCloudSnapshot] = useState<MuseCloudSnapshot | null>(null)
+  const [isLoadingCloud, setIsLoadingCloud] = useState(false)
+  const [selectedCloudFile, setSelectedCloudFile] = useState<{
+    fileName: string
+    content: string
+  } | null>(null)
+  const [isReadingCloudFile, setIsReadingCloudFile] = useState(false)
+
+  const handleOpenCloudHub = async (
+    initialTab?: 'activity' | 'goals' | 'files' | 'console',
+    forceRefresh = false
+  ) => {
+    setShowSettings(false)
+    if (initialTab) setCloudTab(initialTab)
+    setShowCloudHub(true)
+    if (!cloudSnapshot || forceRefresh) {
+      setIsLoadingCloud(true)
+      try {
+        const snap = await window.chatApi?.getCloudSnapshot(forceRefresh)
+        if (snap) setCloudSnapshot(snap)
+      } finally {
+        setIsLoadingCloud(false)
+      }
+    }
+  }
+
+  const handleReadCloudFile = async (fileName: string) => {
+    setIsReadingCloudFile(true)
+    try {
+      const res = await window.chatApi?.readCloudFile(fileName)
+      if (res) setSelectedCloudFile(res)
+    } finally {
+      setIsReadingCloudFile(false)
+    }
+  }
+
+  const handleOpenCloudConsole = async (target: MuseCloudConsoleTarget = 'main') => {
+    await window.chatApi?.openCloudConsole(target)
+  }
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -531,6 +584,18 @@ export default function ChatApp() {
       ])
       return true
     }
+    if (cmd === '/cloud' || cmd === 'cloud') {
+      await handleOpenCloudHub('activity', false)
+      return true
+    }
+    if (cmd === '/console' || cmd === 'console') {
+      await handleOpenCloudConsole('main')
+      return true
+    }
+    if (cmd === '/wardrobe' || cmd === 'wardrobe') {
+      await handleOpenCloudConsole('wardrobe')
+      return true
+    }
     if (cmd === '/sync' || cmd === 'sync') {
       const synced = await window.chatApi?.syncMessages()
       if (synced && synced.length > 0) {
@@ -557,7 +622,7 @@ export default function ChatApp() {
           id: String(Date.now()),
           role: 'assistant',
           content:
-            '支持的终端快捷命令（也支持直接用自然语言吩咐）：\n```shell\n/plugin <修改需求> # 🎨 让 Luna 自修改界面或挂载小功能 (如: 换成赛博朋克主题 / 增加一个小闹钟 / 给桌宠加霓虹光环)\n/reset-ui       # 一键清空所有自定义主题与插件，恢复出厂界面\n/gmail <条件>    # 打开 Gmail 按条件筛选并由 Luna 提炼邮件重点 (如: /gmail 未读)\n/screen [问题]   # 截取当前电脑桌面发送给 Luna 看图分析\n/sys            # 查看当前电脑 CPU、内存与高占用进程实时状态\n/ps <命令>       # 创建待授权的本地 PowerShell 执行卡片 (需手动点击批准)\n/settings       # 打开设置面板 (管理插件、透明度与代理)\n/clear          # 清空当前终端缓冲区\n/exit           # 收起终端窗口 (同 Esc / Alt+Space)\n```',
+            '支持的终端快捷命令（也支持直接用自然语言吩咐）：\n```shell\n/cloud          # ☁️ 打开 Muse 云端中枢 (查看云端动态、预定任务、目标点子与 MEMORY/SOUL 云端文件)\n/console        # 🌐 呼出共享会话的原生 muse.ai 完整工作台窗口 (关闭自动退回后台保活)\n/wardrobe       # 👗 打开原生 muse.ai 可视化换装与捏脸衣柜\n/plugin <修改需求> # 🎨 让 Luna 自修改界面或挂载小功能 (如: 换成赛博朋克主题 / 增加一个小闹钟 / 给桌宠加霓虹光环)\n/reset-ui       # 一键清空所有自定义主题与插件，恢复出厂界面\n/gmail <条件>    # 打开 Gmail 按条件筛选并由 Luna 提炼邮件重点 (如: /gmail 未读)\n/screen [问题]   # 截取当前电脑桌面发送给 Luna 看图分析\n/sys            # 查看当前电脑 CPU、内存与高占用进程实时状态\n/ps <命令>       # 创建待授权的本地 PowerShell 执行卡片 (需手动点击批准)\n/settings       # 打开设置面板 (管理插件、透明度与代理)\n/clear          # 清空当前终端缓冲区\n/exit           # 收起终端窗口 (同 Esc / Alt+Space)\n```',
           timestamp: Date.now(),
         },
       ])
@@ -967,6 +1032,24 @@ export default function ChatApp() {
               /sync
             </button>
             <button
+              onClick={() => {
+                if (showCloudHub) {
+                  setShowCloudHub(false)
+                } else {
+                  handleOpenCloudHub('activity', false)
+                }
+              }}
+              title="Muse 云端中枢：动态、预定任务、目标点子、云端文件与原生衣柜 (/cloud)"
+              className={`liquid-glass-pill px-2 py-1 rounded-lg flex items-center gap-1 transition-all ${
+                showCloudHub
+                  ? 'text-sky-300 border-sky-400/50 bg-sky-500/20'
+                  : 'text-slate-200/85 hover:text-white'
+              }`}
+            >
+              <Cloud className="w-3 h-3 text-sky-400" />
+              <span>/cloud</span>
+            </button>
+            <button
               onClick={handleClear}
               title="清屏 (/clear)"
               className="liquid-glass-pill px-2 py-1 rounded-lg text-slate-200/85 hover:text-white transition-all"
@@ -974,7 +1057,10 @@ export default function ChatApp() {
               /clear
             </button>
             <button
-              onClick={() => setShowSettings((s) => !s)}
+              onClick={() => {
+                setShowCloudHub(false)
+                setShowSettings((s) => !s)
+              }}
               title="外观透明度与网络配置 (/settings)"
               className={`liquid-glass-pill px-2 py-1 rounded-lg transition-all ${
                 showSettings ? 'text-sky-300 border-sky-400/50' : 'text-slate-200/85 hover:text-white'
@@ -987,6 +1073,394 @@ export default function ChatApp() {
 
         {/* Dynamic Plugin Widget Dock (e.g., Mini Alarm Clock, Sticky Note, Custom Widgets) */}
         <div ref={pluginDockRef} id="muse-plugin-dock" className="no-drag" />
+
+        {/* Muse Cloud Hub Drawer (/cloud · Activity, Scheduled Tasks, Goals, Ideas, Hatch VM Files & Native Console) */}
+        {showCloudHub && (
+          <div className="no-drag bg-[#07090f]/95 backdrop-blur-2xl border-b border-white/15 px-4 py-3.5 space-y-3 text-xs animate-in slide-in-from-top-2 duration-200 max-h-[410px] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-white/10 pb-2">
+              <div className="flex items-center gap-2 text-white font-terminal text-xs">
+                <Cloud className="w-3.5 h-3.5 text-sky-400" />
+                <span>
+                  {agentDisplayName} cloud hub · 云端动态 / 预定任务 / 目标点子 / Hatch VM 资源库
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleOpenCloudHub(cloudTab, true)}
+                  disabled={isLoadingCloud}
+                  title="从 muse.ai 实时刷新云端状态"
+                  className="liquid-glass-pill px-2 py-0.5 rounded-md font-terminal text-[10.5px] text-sky-200 flex items-center gap-1 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isLoadingCloud ? 'animate-spin' : ''}`} />
+                  <span>{isLoadingCloud ? '同步中...' : '刷新云端'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleOpenCloudConsole('wardrobe')}
+                  title="打开原生 muse.ai 可视化换装衣柜 (/wardrobe)"
+                  className="liquid-glass-pill px-2 py-0.5 rounded-md font-terminal text-[10.5px] text-fuchsia-200 border-fuchsia-400/35 flex items-center gap-1 hover:bg-fuchsia-500/20"
+                >
+                  <Shirt className="w-3 h-3 text-fuchsia-300" />
+                  <span>可视化衣柜</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleOpenCloudConsole('main')}
+                  title="呼出共享会话的完整 muse.ai 原生窗口 (/console)"
+                  className="liquid-glass-pill px-2 py-0.5 rounded-md font-terminal text-[10.5px] text-emerald-200 border-emerald-400/35 flex items-center gap-1 hover:bg-emerald-500/20"
+                >
+                  <ExternalLink className="w-3 h-3 text-emerald-300" />
+                  <span>原生工作台</span>
+                </button>
+                <button
+                  onClick={() => setShowCloudHub(false)}
+                  className="text-slate-400 hover:text-white ml-1"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Cloud Hub Sub-navigation Tabs */}
+            <div className="grid grid-cols-4 gap-1.5 font-terminal text-[11px]">
+              {[
+                { id: 'activity', label: '⚡ 动态与预定任务' },
+                { id: 'goals', label: '🎯 目标与点子卡片' },
+                { id: 'files', label: '📂 云端系统文件 (MEMORY/SOUL)' },
+                { id: 'console', label: '🌐 原生云端工作台' },
+              ].map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setCloudTab(t.id as any)}
+                  className={`py-1.5 px-2 rounded-lg border text-center transition-all truncate ${
+                    cloudTab === t.id
+                      ? 'bg-sky-500/25 border-sky-400/60 text-sky-100 font-medium shadow-inner'
+                      : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab 1: Cloud Activity & Scheduled Tasks */}
+            {cloudTab === 'activity' && (
+              <div className="space-y-3">
+                {cloudSnapshot?.identityVibe && (
+                  <div className="px-3 py-2 rounded-xl bg-white/[0.04] border border-white/10 flex items-center justify-between gap-2">
+                    <div className="text-[11px] text-slate-300">
+                      <span className="text-sky-300 font-terminal mr-1.5">[{agentDisplayName} 风格气质]</span>
+                      <span>{cloudSnapshot.identityVibe}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCloudTab('files')
+                        handleReadCloudFile('SOUL.md')
+                      }}
+                      className="text-[10.5px] font-terminal text-sky-300 hover:underline flex-shrink-0"
+                    >
+                      查看 SOUL.md →
+                    </button>
+                  </div>
+                )}
+
+                {/* Scheduled Tasks */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-slate-200 font-medium font-terminal text-[11px]">
+                    <span className="flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-amber-400" />
+                      <span>云端预定任务 (Scheduled Tasks · {(cloudSnapshot?.scheduledTasks || []).length})</span>
+                    </span>
+                  </div>
+                  {(cloudSnapshot?.scheduledTasks || []).length === 0 ? (
+                    <div className="text-[11px] text-slate-400 py-1">
+                      {isLoadingCloud ? '正在从 muse.ai 读取预定任务...' : '暂无预定任务'}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-3 gap-2">
+                      {(cloudSnapshot?.scheduledTasks || []).map((task, idx) => (
+                        <div
+                          key={idx}
+                          className="p-2 rounded-lg bg-white/[0.04] border border-white/10 flex flex-col justify-between gap-1"
+                        >
+                          <div className="font-medium text-slate-100 text-[11.5px] truncate">
+                            {task.title}
+                          </div>
+                          <div className="font-terminal text-[10px] text-amber-300/90">
+                            ⏰ {task.schedule}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Activity Timeline */}
+                <div className="space-y-1.5 pt-1 border-t border-white/10">
+                  <div className="flex items-center justify-between text-slate-200 font-medium font-terminal text-[11px]">
+                    <span>云端自治动态日志 (Hatch VM Activity · {(cloudSnapshot?.activities || []).length})</span>
+                  </div>
+                  {(cloudSnapshot?.activities || []).length === 0 ? (
+                    <div className="text-[11px] text-slate-400 py-2">
+                      {isLoadingCloud ? '正在同步云端动态...' : '暂无云端动态记录'}
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                      {(cloudSnapshot?.activities || []).map((act, idx) => (
+                        <div
+                          key={idx}
+                          className="px-2.5 py-1.5 rounded-lg bg-white/[0.03] border border-white/10 flex items-start justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-slate-100 font-medium text-[11.5px] truncate">
+                              {act.title}
+                            </div>
+                            {act.summary && (
+                              <div className="text-slate-400 text-[10.5px] truncate">
+                                {act.summary}
+                              </div>
+                            )}
+                          </div>
+                          <span className="font-terminal text-[10px] text-slate-400 flex-shrink-0">
+                            {act.day} {act.time}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Tab 2: Goals & Ideas */}
+            {cloudTab === 'goals' && (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-slate-200 font-medium font-terminal text-[11px]">
+                    <span className="flex items-center gap-1.5">
+                      <Target className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>正在追踪的云端目标 (Goals · {(cloudSnapshot?.goals || []).length})</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenCloudConsole('goals')}
+                      className="text-[10.5px] text-sky-300 hover:underline"
+                    >
+                      在原生窗口管理目标 →
+                    </button>
+                  </div>
+                  {(cloudSnapshot?.goals || []).length === 0 ? (
+                    <div className="text-[11px] text-slate-400">暂无云端追踪目标</div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      {(cloudSnapshot?.goals || []).map((g, idx) => (
+                        <div
+                          key={idx}
+                          className="p-2.5 rounded-xl bg-emerald-500/[0.07] border border-emerald-400/25 space-y-1 flex flex-col justify-between"
+                        >
+                          <div>
+                            <div className="text-emerald-200 font-medium text-[11.5px]">{g.title}</div>
+                            <div className="text-slate-300/90 text-[10.5px] leading-snug line-clamp-2 mt-0.5">
+                              {g.description}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowCloudHub(false)
+                              handleSend(`关于我的目标「${g.title}」，现在进展如何？`)
+                            }}
+                            className="text-left font-terminal text-[10px] text-emerald-300 hover:text-emerald-200 underline pt-1"
+                          >
+                            ❯ 向 {agentDisplayName} 追问此目标进展
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-1.5 pt-2 border-t border-white/10">
+                  <div className="flex items-center justify-between text-slate-200 font-medium font-terminal text-[11px]">
+                    <span className="flex items-center gap-1.5">
+                      <Lightbulb className="w-3.5 h-3.5 text-amber-400" />
+                      <span>个性化推荐点子卡片 (Ideas · 点击直接发送给 {agentDisplayName})</span>
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                    {(cloudSnapshot?.ideas || []).map((idea, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => {
+                          setShowCloudHub(false)
+                          handleSend(idea.title)
+                        }}
+                        className="p-2.5 rounded-xl bg-white/[0.04] hover:bg-sky-500/15 border border-white/10 hover:border-sky-400/40 text-left transition-all space-y-1 group"
+                      >
+                        <div className="text-slate-100 group-hover:text-sky-200 font-medium text-[11.5px] truncate">
+                          💡 {idea.title}
+                        </div>
+                        <div className="text-slate-400 text-[10.5px] line-clamp-2 leading-snug">
+                          {idea.description}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Tab 3: Cloud System Files (MEMORY.md, SOUL.md, IDENTITY.md, etc.) */}
+            {cloudTab === 'files' && (
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between text-slate-200 font-terminal text-[11px]">
+                  <span>Hatch VM 云端文件系统 (/library/files · 点击文件直接在线读取预览)</span>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenCloudConsole('library')}
+                    className="text-sky-300 hover:underline text-[10.5px]"
+                  >
+                    在原生窗口编辑文件 →
+                  </button>
+                </div>
+
+                {/* Quick Pinned Core Markdown Files */}
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    'MEMORY.md',
+                    'SOUL.md',
+                    'IDENTITY.md',
+                    'PROACTIVE_PREFERENCES.md',
+                    'USER.md',
+                    'HEARTBEAT.md',
+                    'AGENTS.md',
+                    'TOOLS.md',
+                  ].map((fname) => (
+                    <button
+                      key={fname}
+                      type="button"
+                      onClick={() => handleReadCloudFile(fname)}
+                      className={`px-2.5 py-1 rounded-lg font-terminal text-[10.5px] border flex items-center gap-1 transition-all ${
+                        selectedCloudFile?.fileName === fname
+                          ? 'bg-sky-500/25 border-sky-400/60 text-sky-100'
+                          : 'bg-white/5 border-white/10 text-slate-200 hover:bg-white/10'
+                      }`}
+                    >
+                      <FileText className="w-3 h-3 text-sky-400" />
+                      <span>{fname}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {isReadingCloudFile && (
+                  <div className="p-3 rounded-xl bg-black/40 border border-white/10 flex items-center gap-2 text-sky-300 font-terminal text-xs">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>正在从云端 Hatch VM 读取文件内容...</span>
+                  </div>
+                )}
+
+                {!isReadingCloudFile && selectedCloudFile && (
+                  <div className="rounded-xl bg-slate-950/80 border border-sky-400/35 overflow-hidden">
+                    <div className="px-3 py-1.5 bg-white/[0.06] border-b border-white/10 flex items-center justify-between font-terminal text-[11px]">
+                      <span className="text-sky-300 font-medium">
+                        📄 /{selectedCloudFile.fileName}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedCloudFile(null)}
+                        className="text-slate-400 hover:text-white"
+                      >
+                        关闭预览
+                      </button>
+                    </div>
+                    <pre className="p-3 max-h-48 overflow-y-auto font-terminal text-[11px] text-slate-100 whitespace-pre-wrap leading-relaxed">
+                      {selectedCloudFile.content}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Full Directory Listing */}
+                <div className="grid grid-cols-3 gap-1.5 max-h-40 overflow-y-auto pr-1 pt-1">
+                  {(cloudSnapshot?.files || []).map((item, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => {
+                        if (item.type === 'file') {
+                          handleReadCloudFile(item.name)
+                        } else {
+                          handleOpenCloudConsole('library')
+                        }
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg bg-white/[0.03] hover:bg-white/[0.08] border border-white/10 flex items-center justify-between text-left transition-all"
+                    >
+                      <span className="flex items-center gap-1.5 truncate font-terminal text-[11px] text-slate-200">
+                        {item.type === 'folder' ? (
+                          <Folder className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                        ) : (
+                          <FileText className="w-3.5 h-3.5 text-sky-400 flex-shrink-0" />
+                        )}
+                        <span className="truncate">{item.name}</span>
+                      </span>
+                      {item.size && (
+                        <span className="font-terminal text-[9.5px] text-slate-400 flex-shrink-0 ml-1">
+                          {item.size}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Tab 4: Native Cloud Console & Visual Wardrobe */}
+            {cloudTab === 'console' && (
+              <div className="space-y-2.5">
+                <div className="text-[11.5px] text-slate-300 leading-relaxed">
+                  直接呼出共享登录会话的 <code className="text-sky-300 font-terminal">muse.ai</code> 原生工作台窗口（支持可视化换装衣柜、空间网页编辑、播客与旁聊线程管理）。关闭窗口时会自动退回后台保活，不会中断桌宠同步。
+                </div>
+                <div className="grid grid-cols-2 gap-2 font-terminal">
+                  {[
+                    {
+                      target: 'wardrobe' as MuseCloudConsoleTarget,
+                      title: '👗 打开可视化换装衣柜 (/wardrobe)',
+                      desc: '进入 Avatar 编辑器预览全身穿搭、头饰与动作',
+                    },
+                    {
+                      target: 'main' as MuseCloudConsoleTarget,
+                      title: '💬 打开完整聊天与旁聊工作台 (/console)',
+                      desc: '使用原生旁聊线程、语音通话与身份审批面板',
+                    },
+                    {
+                      target: 'library' as MuseCloudConsoleTarget,
+                      title: '📂 打开云端资源库与空间 (/library)',
+                      desc: '可视化编辑 MEMORY.md、SOUL.md、图片视频与空间',
+                    },
+                    {
+                      target: 'goals' as MuseCloudConsoleTarget,
+                      title: '🎯 打开云端目标与点子中心 (/goals)',
+                      desc: '创建或管理长期追踪目标与自动化习惯',
+                    },
+                  ].map((card) => (
+                    <button
+                      key={card.target}
+                      type="button"
+                      onClick={() => handleOpenCloudConsole(card.target)}
+                      className="p-3 rounded-xl bg-white/[0.04] hover:bg-sky-500/15 border border-white/10 hover:border-sky-400/50 text-left transition-all space-y-1"
+                    >
+                      <div className="text-sky-200 font-medium text-xs">{card.title}</div>
+                      <div className="text-slate-400 text-[10.5px] font-sans">{card.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Settings Drawer (/settings · Appearance, Network & Secretary Workflows) */}
         {showSettings && (
@@ -1599,9 +2073,11 @@ export default function ChatApp() {
 
         {/* macOS Spotlight / Terminal Command Prompt Bar */}
         <div className="no-drag liquid-glass-prompt px-4 py-2.5">
-          {/* Quick Plugin Pills */}
+          {/* Quick Plugin & Cloud Pills */}
           <div className="flex items-center gap-1.5 pb-2 mb-2 border-b border-white/10 overflow-x-auto">
             {[
+              { cmd: '/cloud', label: '☁️ 云端中枢' },
+              { cmd: '/wardrobe', label: '👗 换装衣柜' },
               { cmd: '/plugin 增加一个小闹钟', label: '⏰ 挂载小闹钟' },
               { cmd: '/plugin 把终端改成赛博朋克主题', label: '🎨 赛博主题' },
               { cmd: '/plugin 增加一个便利贴', label: '📝 便利贴' },
