@@ -34,6 +34,24 @@ import type {
 /** Shared partition for the hidden muse.ai browser window */
 export const MUSE_PARTITION = 'persist:meta_muse'
 
+/** Isolation stylesheet id — only injected into the dedicated cloud-browser window */
+const CLOUD_BROWSER_ISOLATION_STYLE_ID = 'muse-pet-cloud-browser-isolation'
+
+/** Verified isolation CSS: hide Muse chrome; fullscreen only the official browser panel */
+const CLOUD_BROWSER_ISOLATION_CSS = `
+body * { visibility: hidden !important; }
+[data-testid="browser-session-side-panel"],
+[data-testid="browser-session-side-panel"] * { visibility: visible !important; }
+[data-testid="browser-session-side-panel"] {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 2147483647 !important;
+  background: var(--color-fill-dialog, #fff) !important;
+}
+`.trim()
+
 /** Extract all muse.ai cookies from the shared session (used by auth flow) */
 export async function extractMuseSessionCookies(): Promise<string> {
   const ses = session.fromPartition(MUSE_PARTITION)
@@ -52,6 +70,8 @@ const STREAM_POLL_MS = 80
 export class MuseClient {
   private sessionStore: SessionStore
   private museWindow: BrowserWindow | null = null
+  /** Dedicated native cloud-browser surface; never replaces the sync museWindow */
+  private cloudBrowserWindow: BrowserWindow | null = null
   private aborted = false
   private activeRunId = 0
   private avatarSyncing = false
@@ -575,6 +595,100 @@ export class MuseClient {
     return win
   }
 
+  /**
+   * Dedicated BrowserWindow for native cloud-browser preview.
+   * Shares persist:meta_muse with the sync museWindow but never shows/steals that window.
+   */
+  private async ensureCloudBrowserWindow(cookies: string): Promise<BrowserWindow> {
+    const ses = session.fromPartition(MUSE_PARTITION)
+    await this.injectCookiesIntoSession(ses, cookies)
+
+    if (!this.cloudBrowserWindow || this.cloudBrowserWindow.isDestroyed()) {
+      this.cloudBrowserWindow = new BrowserWindow({
+        width: 1280,
+        height: 860,
+        title: 'Muse Cloud Browser',
+        autoHideMenuBar: true,
+        show: false,
+        skipTaskbar: false,
+        webPreferences: {
+          partition: MUSE_PARTITION,
+          nodeIntegration: false,
+          contextIsolation: false,
+          javascript: true,
+          backgroundThrottling: false,
+        },
+      })
+      this.cloudBrowserWindow.webContents.setUserAgent(
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+      )
+      // Muse SPA overwrites document.title frequently; lock the native window label.
+      const lockCloudBrowserTitle = () => {
+        if (this.cloudBrowserWindow && !this.cloudBrowserWindow.isDestroyed()) {
+          if (this.cloudBrowserWindow.getTitle() !== 'Muse Cloud Browser') {
+            this.cloudBrowserWindow.setTitle('Muse Cloud Browser')
+          }
+        }
+      }
+      this.cloudBrowserWindow.on('page-title-updated', (e) => {
+        e.preventDefault()
+        lockCloudBrowserTitle()
+      })
+      this.cloudBrowserWindow.webContents.on('did-finish-load', lockCloudBrowserTitle)
+      this.cloudBrowserWindow.webContents.on('did-navigate-in-page', lockCloudBrowserTitle)
+      this.cloudBrowserWindow.webContents.on('dom-ready', lockCloudBrowserTitle)
+      this.cloudBrowserWindow.on('close', (e) => {
+        if (
+          this.cloudBrowserWindow &&
+          !this.cloudBrowserWindow.isDestroyed() &&
+          this.cloudBrowserWindow.isVisible()
+        ) {
+          e.preventDefault()
+          this.cloudBrowserWindow.hide()
+        }
+      })
+      this.cloudBrowserWindow.on('closed', () => {
+        this.cloudBrowserWindow = null
+      })
+    }
+
+    return this.cloudBrowserWindow
+  }
+
+  private async loadCloudBrowserUrl(win: BrowserWindow, targetUrl: string): Promise<void> {
+    const currentUrl = win.webContents.getURL()
+    if (currentUrl === targetUrl) return
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Cloud browser page load timeout')), PAGE_READY_TIMEOUT_MS)
+      const onFail = (_event: Electron.Event, errorCode: number, errorDescription: string) => {
+        if (errorCode === -3) return // aborted / redirected
+        clearTimeout(timer)
+        win.webContents.removeListener('did-finish-load', onLoad)
+        reject(new Error(errorDescription || 'Cloud browser page failed to load'))
+      }
+      const onLoad = () => {
+        clearTimeout(timer)
+        win.webContents.removeListener('did-fail-load', onFail)
+        resolve()
+      }
+      win.webContents.once('did-finish-load', onLoad)
+      win.webContents.once('did-fail-load', onFail)
+      win.loadURL(targetUrl).catch((err) => {
+        clearTimeout(timer)
+        win.webContents.removeListener('did-finish-load', onLoad)
+        win.webContents.removeListener('did-fail-load', onFail)
+        reject(err)
+      })
+    })
+  }
+
+  private hideCloudBrowserWindow() {
+    if (this.cloudBrowserWindow && !this.cloudBrowserWindow.isDestroyed() && this.cloudBrowserWindow.isVisible()) {
+      this.cloudBrowserWindow.hide()
+    }
+  }
+
   public async syncAvatarAssets(force = false): Promise<AvatarAssets | null> {
     const cookies = this.sessionStore.getCookies()
     if (!cookies) return this.getCachedAvatarAssets()
@@ -1078,7 +1192,11 @@ export class MuseClient {
     }
   }
 
-  /** Open only the preview belonging to the persisted source message; never choose a global/latest button. */
+  /**
+   * Open the exact message preview in a dedicated native cloud-browser window.
+   * Never falls back to showing the sync museWindow. Opens in preview mode only
+   * (does not auto-click 「控制浏览器」).
+   */
   public async openCloudBrowser(identity: CloudBrowserMessage): Promise<OpenCloudBrowserResult> {
     const fail = (error: string): OpenCloudBrowserResult => ({ ok: false, error })
     if (!identity || typeof identity.messageId !== 'string' || !identity.messageId ||
@@ -1089,33 +1207,89 @@ export class MuseClient {
       const cookies = this.sessionStore.getCookies()
       if (!cookies || !this.sessionStore.getProfile().isLoggedIn) return fail('请先登录 Muse。')
       if (this.isFetchingCloudData) return fail('云端正在同步，请稍后重试。')
-      const win = await this.ensureMuseWindow(cookies)
+
+      const win = await this.ensureCloudBrowserWindow(cookies)
+      try {
+        await this.loadCloudBrowserUrl(win, identity.sourceUrl)
+      } catch {
+        this.hideCloudBrowserWindow()
+        return fail('无法加载此消息的云端会话，请稍后重试。')
+      }
+
+      const result: OpenCloudBrowserResult = await win.webContents.executeJavaScript(`
+        (async () => {
+          const identity = ${JSON.stringify(identity)}
+          const styleId = ${JSON.stringify(CLOUD_BROWSER_ISOLATION_STYLE_ID)}
+          const isolationCss = ${JSON.stringify(CLOUD_BROWSER_ISOLATION_CSS)}
+
+          if (location.href !== identity.sourceUrl) {
+            return { ok: false, error: '当前云端会话与此消息不同，请同步消息后重试。' }
+          }
+
+          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+          // Cold dedicated-window loads need time for Hatch chat history to hydrate.
+          let button = null
+          for (let attempt = 0; attempt < 80; attempt++) {
+            const matches = Array.from(document.querySelectorAll('[data-message-item="true"]'))
+              .filter((el) => el.getAttribute('data-message-id') === identity.messageId)
+            if (matches.length === 1) {
+              const buttons = matches[0].querySelectorAll('button[aria-label="打开浏览器预览"]')
+              if (buttons.length === 1 && !buttons[0].disabled) {
+                button = buttons[0]
+                break
+              }
+            }
+            await sleep(250)
+          }
+
+          if (!button) {
+            return { ok: false, error: '未找到此消息的浏览器预览，可能已过期。请同步消息后重试。' }
+          }
+
+          // Close any existing panel so we always open this message's preview (no toggle race).
+          const existingClose = document.querySelector('button[aria-label="关闭浏览器会话面板"]')
+          if (existingClose) {
+            existingClose.click()
+            for (let attempt = 0; attempt < 20; attempt++) {
+              await sleep(100)
+              if (!document.querySelector('[data-testid="browser-session-side-panel"]')) break
+            }
+          }
+
+          button.click()
+
+          for (let attempt = 0; attempt < 40; attempt++) {
+            await sleep(150)
+            const panel = document.querySelector('[data-testid="browser-session-side-panel"]')
+            if (!panel) continue
+
+            let style = document.getElementById(styleId)
+            if (!style) {
+              style = document.createElement('style')
+              style.id = styleId
+              document.head.appendChild(style)
+            }
+            style.textContent = isolationCss
+            return { ok: true }
+          }
+
+          return { ok: false, error: '浏览器预览面板未能打开，请稍后重试。' }
+        })()
+      `)
+
+      if (!result?.ok) {
+        this.hideCloudBrowserWindow()
+        return result?.error ? result : fail('浏览器预览未能打开，请稍后重试。')
+      }
+
       win.setSkipTaskbar(false)
       if (win.isMinimized()) win.restore()
       win.show()
       win.focus()
-      return await win.webContents.executeJavaScript(`
-        (async () => {
-          const identity = ${JSON.stringify(identity)}
-          if (location.href !== identity.sourceUrl) {
-            return { ok: false, error: '当前云端会话与此消息不同，请在原生窗口返回对应会话后重试。' }
-          }
-          const matches = Array.from(document.querySelectorAll('[data-message-item="true"]'))
-            .filter(el => el.getAttribute('data-message-id') === identity.messageId)
-          const buttons = matches.length === 1
-            ? matches[0].querySelectorAll('button[aria-label="打开浏览器预览"]') : []
-          if (buttons.length !== 1 || buttons[0].disabled) {
-            return { ok: false, error: '未找到此消息的浏览器预览，可能已过期。请同步消息后重试。' }
-          }
-          buttons[0].click()
-          for (let attempt = 0; attempt < 20; attempt++) {
-            await new Promise(resolve => setTimeout(resolve, 150))
-            if (document.querySelector('button[aria-label="关闭浏览器会话面板"]')) return { ok: true }
-          }
-          return { ok: false, error: '浏览器预览未能打开，请在原生窗口检查后重试。' }
-        })()
-      `)
+      return { ok: true }
     } catch {
+      this.hideCloudBrowserWindow()
       return fail('无法打开浏览器预览，请稍后重试。')
     }
   }
