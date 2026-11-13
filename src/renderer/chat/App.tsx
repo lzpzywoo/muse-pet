@@ -7,6 +7,7 @@ import type {
   SecretaryState,
   MuseCloudSnapshot,
   MuseCloudConsoleTarget,
+  MuseCloudBrowserStatus,
 } from '../../types'
 import {
   Square,
@@ -228,6 +229,7 @@ export default function ChatApp() {
     content: string
   } | null>(null)
   const [isReadingCloudFile, setIsReadingCloudFile] = useState(false)
+  const [cloudBrowserStatus, setCloudBrowserStatus] = useState<MuseCloudBrowserStatus | null>(null)
 
   const handleOpenCloudHub = async (
     initialTab?: 'activity' | 'goals' | 'files' | 'console',
@@ -407,6 +409,10 @@ export default function ChatApp() {
       if (st) setSecretaryState(st)
     })
 
+    window.chatApi?.getCloudBrowserStatus().then((status) => {
+      if (status) setCloudBrowserStatus(status)
+    })
+
     window.chatApi?.getBounds().then((b) => {
       if (b && b.width && b.height) {
         setWinBounds({ width: b.width, height: b.height })
@@ -507,6 +513,10 @@ export default function ChatApp() {
       setSecretaryState(st)
     })
 
+    const unsubBrowser = window.chatApi?.onCloudBrowserStatus((status) => {
+      setCloudBrowserStatus(status)
+    })
+
     const unsubBounds = window.chatApi?.onBoundsChanged((b) => {
       if (b && b.width && b.height) {
         setWinBounds({ width: b.width, height: b.height })
@@ -521,6 +531,7 @@ export default function ChatApp() {
       unsubSynced?.()
       unsubSecAction?.()
       unsubSecState?.()
+      unsubBrowser?.()
       unsubBounds?.()
     }
   }, [])
@@ -1068,6 +1079,38 @@ export default function ChatApp() {
 
         {/* Dynamic Plugin Widget Dock (e.g., Mini Alarm Clock, Sticky Note, Custom Widgets) */}
         <div ref={pluginDockRef} id="muse-plugin-dock" className="no-drag" />
+
+        {/* Auto cloud-browser status card — only while Luna's Hatch browser task is active */}
+        {cloudBrowserStatus?.active && (
+          <div className="no-drag mx-3 mt-2 mb-1 px-3 py-2.5 rounded-xl bg-sky-500/10 border border-sky-400/35 backdrop-blur-xl flex items-center justify-between gap-3 animate-in slide-in-from-top-2 duration-200">
+            <div className="min-w-0 flex items-start gap-2.5">
+              <Globe className="w-4 h-4 text-sky-300 mt-0.5 flex-shrink-0" />
+              <div className="min-w-0">
+                <div className="font-terminal text-[11px] text-sky-200 flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
+                  <span>{agentDisplayName} 正在使用云浏览器</span>
+                </div>
+                <div className="text-[11.5px] text-slate-100 truncate mt-0.5">
+                  {cloudBrowserStatus.title || '浏览任务进行中'}
+                </div>
+                {(cloudBrowserStatus.url || cloudBrowserStatus.summary) && (
+                  <div className="font-terminal text-[10.5px] text-slate-400 truncate mt-0.5">
+                    {cloudBrowserStatus.url || cloudBrowserStatus.summary}
+                  </div>
+                )}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleOpenCloudConsole('main')}
+              className="liquid-glass-pill flex-shrink-0 px-3 py-1.5 rounded-lg font-terminal text-[11px] text-emerald-100 border-emerald-400/45 bg-emerald-500/20 hover:bg-emerald-500/30 flex items-center gap-1.5"
+              title="在原生 muse.ai 窗口接管云浏览器"
+            >
+              <ExternalLink className="w-3.5 h-3.5 text-emerald-300" />
+              <span>接管</span>
+            </button>
+          </div>
+        )}
 
         {/* Muse Cloud Hub Drawer (/cloud · Activity, Scheduled Tasks, Goals, Ideas, Hatch VM Files & Native Console) */}
         {showCloudHub && (
