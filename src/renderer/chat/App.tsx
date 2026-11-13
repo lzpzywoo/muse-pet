@@ -37,7 +37,6 @@ import {
   Clock,
   Target,
   Lightbulb,
-  Shirt,
 } from 'lucide-react'
 
 // Lightweight Markdown & Code Block Formatter in Liquid Glass Terminal style
@@ -592,10 +591,6 @@ export default function ChatApp() {
       await handleOpenCloudConsole('main')
       return true
     }
-    if (cmd === '/wardrobe' || cmd === 'wardrobe') {
-      await handleOpenCloudConsole('wardrobe')
-      return true
-    }
     if (cmd === '/sync' || cmd === 'sync') {
       const synced = await window.chatApi?.syncMessages()
       if (synced && synced.length > 0) {
@@ -622,7 +617,7 @@ export default function ChatApp() {
           id: String(Date.now()),
           role: 'assistant',
           content:
-            '支持的终端快捷命令（也支持直接用自然语言吩咐）：\n```shell\n/cloud          # ☁️ 打开 Muse 云端中枢 (查看云端动态、预定任务、目标点子与 MEMORY/SOUL 云端文件)\n/console        # 🌐 呼出共享会话的原生 muse.ai 完整工作台窗口 (关闭自动退回后台保活)\n/wardrobe       # 👗 打开原生 muse.ai 可视化换装与捏脸衣柜\n/plugin <修改需求> # 🎨 让 Luna 自修改界面或挂载小功能 (如: 换成赛博朋克主题 / 增加一个小闹钟 / 给桌宠加霓虹光环)\n/reset-ui       # 一键清空所有自定义主题与插件，恢复出厂界面\n/gmail <条件>    # 打开 Gmail 按条件筛选并由 Luna 提炼邮件重点 (如: /gmail 未读)\n/screen [问题]   # 截取当前电脑桌面发送给 Luna 看图分析\n/sys            # 查看当前电脑 CPU、内存与高占用进程实时状态\n/ps <命令>       # 创建待授权的本地 PowerShell 执行卡片 (需手动点击批准)\n/settings       # 打开设置面板 (管理插件、透明度与代理)\n/clear          # 清空当前终端缓冲区\n/exit           # 收起终端窗口 (同 Esc / Alt+Space)\n```',
+            '支持的终端快捷命令（也支持直接用自然语言吩咐）：\n```shell\n/cloud          # 打开 Muse 云端中枢 (动态、预定任务、目标点子、云端文件)\n/console        # 呼出共享会话的原生 muse.ai 工作台 (关闭自动退回后台保活)\n/plugin <修改需求> # 让 Luna 自修改界面或挂载小功能\n/reset-ui       # 清空自定义主题与插件，恢复默认界面\n/gmail <条件>    # 打开 Gmail 按条件筛选并由 Luna 提炼邮件重点\n/screen [问题]   # 截取当前桌面发送给 Luna 看图分析\n/sys            # 查看当前电脑 CPU、内存与高占用进程\n/ps <命令>       # 创建待授权的本地 PowerShell 执行卡片\n/settings       # 打开设置面板\n/clear          # 清空当前终端缓冲区\n/exit           # 收起终端窗口 (同 Esc / Alt+Space)\n```',
           timestamp: Date.now(),
         },
       ])
@@ -1097,15 +1092,6 @@ export default function ChatApp() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleOpenCloudConsole('wardrobe')}
-                  title="打开原生 muse.ai 可视化换装衣柜 (/wardrobe)"
-                  className="liquid-glass-pill px-2 py-0.5 rounded-md font-terminal text-[10.5px] text-fuchsia-200 border-fuchsia-400/35 flex items-center gap-1 hover:bg-fuchsia-500/20"
-                >
-                  <Shirt className="w-3 h-3 text-fuchsia-300" />
-                  <span>可视化衣柜</span>
-                </button>
-                <button
-                  type="button"
                   onClick={() => handleOpenCloudConsole('main')}
                   title="呼出共享会话的完整 muse.ai 原生窗口 (/console)"
                   className="liquid-glass-pill px-2 py-0.5 rounded-md font-terminal text-[10.5px] text-emerald-200 border-emerald-400/35 flex items-center gap-1 hover:bg-emerald-500/20"
@@ -1417,33 +1403,33 @@ export default function ChatApp() {
               </div>
             )}
 
-            {/* Tab 4: Native Cloud Console & Visual Wardrobe */}
+            {/* Tab 4: Native Cloud Console */}
             {cloudTab === 'console' && (
               <div className="space-y-2.5">
                 <div className="text-[11.5px] text-slate-300 leading-relaxed">
-                  直接呼出共享登录会话的 <code className="text-sky-300 font-terminal">muse.ai</code> 原生工作台窗口（支持可视化换装衣柜、空间网页编辑、播客与旁聊线程管理）。关闭窗口时会自动退回后台保活，不会中断桌宠同步。
+                  直接呼出共享登录会话的 <code className="text-sky-300 font-terminal">muse.ai</code> 原生工作台窗口（旁聊线程、空间与云端资源编辑）。关闭窗口时会自动退回后台保活，不会中断桌宠同步。
                 </div>
                 <div className="grid grid-cols-2 gap-2 font-terminal">
                   {[
                     {
-                      target: 'wardrobe' as MuseCloudConsoleTarget,
-                      title: '👗 打开可视化换装衣柜 (/wardrobe)',
-                      desc: '进入 Avatar 编辑器预览全身穿搭、头饰与动作',
-                    },
-                    {
                       target: 'main' as MuseCloudConsoleTarget,
-                      title: '💬 打开完整聊天与旁聊工作台 (/console)',
+                      title: '打开完整聊天与旁聊工作台 (/console)',
                       desc: '使用原生旁聊线程、语音通话与身份审批面板',
                     },
                     {
                       target: 'library' as MuseCloudConsoleTarget,
-                      title: '📂 打开云端资源库与空间 (/library)',
+                      title: '打开云端资源库与空间 (/library)',
                       desc: '可视化编辑 MEMORY.md、SOUL.md、图片视频与空间',
                     },
                     {
                       target: 'goals' as MuseCloudConsoleTarget,
-                      title: '🎯 打开云端目标与点子中心 (/goals)',
+                      title: '打开云端目标与点子中心 (/goals)',
                       desc: '创建或管理长期追踪目标与自动化习惯',
+                    },
+                    {
+                      target: 'ideas' as MuseCloudConsoleTarget,
+                      title: '打开点子中心 (/ideas)',
+                      desc: '浏览并管理个性化推荐点子卡片',
                     },
                   ].map((card) => (
                     <button
@@ -1658,7 +1644,7 @@ export default function ChatApp() {
               </div>
               {(secretaryState.plugins || []).length === 0 ? (
                 <div className="text-[11px] text-slate-400">
-                  暂无自定义插件。直接对 Luna 说"把终端改成赛博朋克主题"或"增加一个小闹钟"即可实时热生成！
+                  暂无自定义插件。直接告诉 Luna 你想怎么改界面或加什么小功能即可实时热生成。
                 </div>
               ) : (
                 <div className="space-y-1.5">
@@ -2073,28 +2059,6 @@ export default function ChatApp() {
 
         {/* macOS Spotlight / Terminal Command Prompt Bar */}
         <div className="no-drag liquid-glass-prompt px-4 py-2.5">
-          {/* Quick Plugin & Cloud Pills */}
-          <div className="flex items-center gap-1.5 pb-2 mb-2 border-b border-white/10 overflow-x-auto">
-            {[
-              { cmd: '/cloud', label: '☁️ 云端中枢' },
-              { cmd: '/wardrobe', label: '👗 换装衣柜' },
-              { cmd: '/plugin 增加一个小闹钟', label: '⏰ 挂载小闹钟' },
-              { cmd: '/plugin 把终端改成赛博朋克主题', label: '🎨 赛博主题' },
-              { cmd: '/plugin 增加一个便利贴', label: '📝 便利贴' },
-              { cmd: '/reset-ui', label: '🔄 重置界面' },
-            ].map((item) => (
-              <button
-                key={item.cmd}
-                type="button"
-                disabled={isStreaming}
-                onClick={() => handleSend(item.cmd)}
-                className="liquid-glass-pill px-2 py-0.5 rounded-md font-terminal text-[11px] text-slate-200 hover:text-sky-200 hover:border-sky-400/50 transition-all disabled:opacity-40"
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-
           <div className="flex items-center gap-2.5">
             <span className="font-terminal text-sm font-bold text-sky-400 drop-shadow-[0_0_10px_rgba(56,189,248,0.65)] flex-shrink-0">
               {agentSlug} ❯
