@@ -66,6 +66,12 @@ export function registerIpcHandlers(
 
   loadPersistedHistory()
   museClient.startCloudMessageWatcher()
+  museClient.onCloudBrowserStatus((status) => {
+    const chatWin = windowManager.getChatWindow()
+    if (chatWin && !chatWin.isDestroyed()) {
+      chatWin.webContents.send('cloud:browser-status', status)
+    }
+  })
   localSecretary.init()
 
   localSecretary.onStateUpdated((state) => {
@@ -774,6 +780,10 @@ export function registerIpcHandlers(
 
   ipcMain.handle('cloud:open-console', async (_event, target?: any) => {
     return await museClient.openCloudConsole(target || 'main')
+  })
+
+  ipcMain.handle('cloud:get-browser-status', async () => {
+    return await museClient.pollCloudBrowserStatus(true)
   })
 
   // App quit

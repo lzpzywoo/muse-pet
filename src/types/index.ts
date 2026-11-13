@@ -153,6 +153,15 @@ export interface MuseCloudSnapshot {
 
 export type MuseCloudConsoleTarget = 'main' | 'wardrobe' | 'library' | 'goals' | 'ideas'
 
+/** Live status of Muse's Hatch VM cloud browser task banner */
+export interface MuseCloudBrowserStatus {
+  active: boolean
+  title?: string
+  url?: string
+  summary?: string
+  updatedAt: number
+}
+
 export interface ChatApi {
   sendMessage: (content: string) => Promise<void>
   stopGeneration: () => void
@@ -195,6 +204,8 @@ export interface ChatApi {
   getCloudSnapshot: (forceRefresh?: boolean) => Promise<MuseCloudSnapshot>
   readCloudFile: (fileName: string) => Promise<{ fileName: string; content: string }>
   openCloudConsole: (target?: MuseCloudConsoleTarget) => Promise<boolean>
+  getCloudBrowserStatus: () => Promise<MuseCloudBrowserStatus>
+  onCloudBrowserStatus: (callback: (status: MuseCloudBrowserStatus) => void) => () => void
 }
 
 declare global {

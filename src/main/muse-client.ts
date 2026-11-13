@@ -23,6 +23,7 @@ import type {
   AvatarAssets,
   ChatAttachment,
   ChatMessage,
+  MuseCloudBrowserStatus,
   MuseCloudConsoleTarget,
   MuseCloudSnapshot,
   UserProfile,
@@ -55,12 +56,18 @@ export class MuseClient {
   private lastAvatarSignature: string | null = null
   private onAvatarSyncedCallbacks: Array<(assets: AvatarAssets) => void> = []
   private onCloudMessagesCallbacks: Array<(messages: ChatMessage[], newAssistantMessage?: ChatMessage) => void> = []
+  private onCloudBrowserStatusCallbacks: Array<(status: MuseCloudBrowserStatus) => void> = []
   private lastSeenAssistantId: string | null = null
   private lastCloudDigest: string = ''
   private cloudWatchTimer: NodeJS.Timeout | null = null
   private isSendingChat = false
   private isFetchingCloudData = false
+  private isPollingBrowserStatus = false
   private cachedCloudSnapshot: MuseCloudSnapshot | null = null
+  private cachedBrowserStatus: MuseCloudBrowserStatus = {
+    active: false,
+    updatedAt: 0,
+  }
 
   constructor(sessionStore: SessionStore) {
     this.sessionStore = sessionStore
@@ -121,18 +128,122 @@ export class MuseClient {
     this.onCloudMessagesCallbacks.push(cb)
   }
 
+  public onCloudBrowserStatus(cb: (status: MuseCloudBrowserStatus) => void) {
+    this.onCloudBrowserStatusCallbacks.push(cb)
+  }
+
+  public getCloudBrowserStatus(): MuseCloudBrowserStatus {
+    return this.cachedBrowserStatus
+  }
+
   public startCloudMessageWatcher() {
     if (this.cloudWatchTimer) return
     this.cloudWatchTimer = setInterval(() => {
-      if (
-        this.isSendingChat ||
-        this.isFetchingCloudData ||
-        !this.sessionStore.getProfile().isLoggedIn
-      ) {
+      if (!this.sessionStore.getProfile().isLoggedIn) {
+        return
+      }
+      // Browser status is cheap and should keep updating even while a chat turn streams.
+      this.pollCloudBrowserStatus().catch(() => {})
+      if (this.isSendingChat || this.isFetchingCloudData) {
         return
       }
       this.fetchCloudMessages(true).catch(() => {})
     }, 4500)
+  }
+
+  /**
+   * Detect Muse Hatch cloud-browser task banner activity.
+   * Idle host exists with 0×0 size; active sessions populate visible content.
+   */
+  public async pollCloudBrowserStatus(force = false): Promise<MuseCloudBrowserStatus> {
+    if (this.isPollingBrowserStatus && !force) {
+      return this.cachedBrowserStatus
+    }
+    const cookies = this.sessionStore.getCookies()
+    if (!cookies) {
+      return this.cachedBrowserStatus
+    }
+
+    this.isPollingBrowserStatus = true
+    try {
+      const win = await this.ensureMuseWindow(cookies)
+      if (this.isFetchingCloudData) {
+        // Avoid colliding with SPA navigation used by cloud snapshot scraping.
+        return this.cachedBrowserStatus
+      }
+
+      const extracted = await win.webContents.executeJavaScript(`
+        (() => {
+          const host = document.querySelector('[data-testid="hatch-browser-task-banner-host"]')
+          if (!host) {
+            return { active: false }
+          }
+          const rect = host.getBoundingClientRect()
+          const text = (host.innerText || '').replace(/\s+/g, ' ').trim()
+          const interactive = host.querySelector('button, a, input, [role="button"], [data-pel-click]')
+          const hasSize = rect.width >= 24 && rect.height >= 16
+          const active = Boolean(hasSize || interactive || text.length > 0)
+          if (!active) {
+            return { active: false }
+          }
+
+          let url = ''
+          let title = ''
+          const link = host.querySelector('a[href]')
+          if (link) {
+            url = link.getAttribute('href') || ''
+            title = (link.innerText || link.getAttribute('aria-label') || '').trim()
+          }
+          const urlMatch = text.match(/https?:\\/\\/[^\\s]+/i)
+          if (!url && urlMatch) url = urlMatch[0]
+
+          if (!title) {
+            const withoutUrl = url ? text.replace(url, ' ').replace(/\\s+/g, ' ').trim() : text
+            title = withoutUrl.slice(0, 80)
+          }
+
+          const summary = text && text !== title ? text.slice(0, 160) : ''
+          return {
+            active: true,
+            title: title || undefined,
+            url: url || undefined,
+            summary: summary || undefined,
+          }
+        })()
+      `)
+
+      const next: MuseCloudBrowserStatus = {
+        active: Boolean(extracted?.active),
+        title: extracted?.title || undefined,
+        url: extracted?.url || undefined,
+        summary: extracted?.summary || undefined,
+        updatedAt: Date.now(),
+      }
+
+      const prev = this.cachedBrowserStatus
+      const changed =
+        prev.active !== next.active ||
+        prev.title !== next.title ||
+        prev.url !== next.url ||
+        prev.summary !== next.summary
+
+      this.cachedBrowserStatus = next
+      if (changed || force) {
+        for (const cb of this.onCloudBrowserStatusCallbacks) {
+          try {
+            cb(next)
+          } catch {
+            // ignore subscriber errors
+          }
+        }
+      }
+      return next
+    } catch (err) {
+      console.error('pollCloudBrowserStatus error:', err)
+      return this.cachedBrowserStatus
+    } finally {
+      this.isPollingBrowserStatus = false
+    }
   }
 
   public async fetchCloudMessages(notifyIfChanged = false): Promise<ChatMessage[]> {

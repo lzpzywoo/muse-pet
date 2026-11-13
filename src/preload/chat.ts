@@ -145,6 +145,16 @@ const chatApi: ChatApi = {
   openCloudConsole: (target) => {
     return ipcRenderer.invoke('cloud:open-console', target || 'main')
   },
+  getCloudBrowserStatus: () => {
+    return ipcRenderer.invoke('cloud:get-browser-status')
+  },
+  onCloudBrowserStatus: (callback) => {
+    const subscription = (_event: any, status: any) => callback(status)
+    ipcRenderer.on('cloud:browser-status', subscription)
+    return () => {
+      ipcRenderer.removeListener('cloud:browser-status', subscription)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('chatApi', chatApi)
