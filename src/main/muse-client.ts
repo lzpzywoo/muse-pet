@@ -23,6 +23,8 @@ import type {
   AvatarAssets,
   ChatAttachment,
   ChatMessage,
+  CloudBrowserMessage,
+  OpenCloudBrowserResult,
   MuseCloudBrowserStatus,
   MuseCloudConsoleTarget,
   MuseCloudSnapshot,
@@ -161,6 +163,7 @@ export class MuseClient {
     }
     const cookies = this.sessionStore.getCookies()
     if (!cookies) {
+      this.clearCloudBrowserStatus()
       return this.cachedBrowserStatus
     }
 
@@ -179,7 +182,7 @@ export class MuseClient {
             return { active: false }
           }
           const rect = host.getBoundingClientRect()
-          const text = (host.innerText || '').replace(/\s+/g, ' ').trim()
+          const text = (host.innerText || '').replace(/\\s+/g, ' ').trim()
           const interactive = host.querySelector('button, a, input, [role="button"], [data-pel-click]')
           const hasSize = rect.width >= 24 && rect.height >= 16
           const active = Boolean(hasSize || interactive || text.length > 0)
@@ -212,6 +215,10 @@ export class MuseClient {
         })()
       `)
 
+      if (!this.sessionStore.getCookies()) {
+        this.clearCloudBrowserStatus()
+        return this.cachedBrowserStatus
+      }
       const next: MuseCloudBrowserStatus = {
         active: Boolean(extracted?.active),
         title: extracted?.title || undefined,
@@ -256,6 +263,7 @@ export class MuseClient {
           id: string
           role: 'user' | 'assistant'
           content: string
+          browser?: CloudBrowserMessage
           attachments: Array<{ type: 'image' | 'video'; dataUrl: string; title?: string }>
         }>
         avatarSignature: string | null
@@ -330,6 +338,9 @@ export class MuseClient {
             const id = el.getAttribute('data-message-id') || ('cloud-' + idx)
             const role = el.getAttribute('data-message-role') === 'user' ? 'user' : 'assistant'
             const content = clean(el)
+            const sourceId = el.getAttribute('data-message-id')
+            const browser = sourceId && el.querySelector('button[aria-label="打开浏览器预览"]')
+              ? { messageId: sourceId, sourceUrl: location.href } : undefined
             const attachments = []
 
             const imgs = Array.from(el.querySelectorAll('img'))
@@ -356,8 +367,8 @@ export class MuseClient {
               }
             }
 
-            if (content.length > 0 || attachments.length > 0) {
-              items.push({ id, role, content, attachments })
+            if (content.length > 0 || attachments.length > 0 || browser) {
+              items.push({ id, role, content, attachments, browser })
             }
           }
 
@@ -444,6 +455,7 @@ export class MuseClient {
           id: item.id,
           role: item.role,
           content: fallbackText,
+          browser: item.browser,
           attachments: attachments.length > 0 ? attachments : undefined,
           timestamp: baseTs + idx * 1000,
           status: 'done',
@@ -460,7 +472,7 @@ export class MuseClient {
       }
 
       const newDigest = cloudMessages
-        .map((m) => `${m.id}:${m.content.length}:${m.attachments?.length || 0}`)
+        .map((m) => `${m.id}:${m.content.length}:${m.attachments?.length || 0}:${JSON.stringify(m.browser || null)}`)
         .join(',')
       const hasDigestChanged = newDigest !== this.lastCloudDigest
       this.lastCloudDigest = newDigest
@@ -1064,6 +1076,53 @@ export class MuseClient {
     } finally {
       this.isFetchingCloudData = false
     }
+  }
+
+  /** Open only the preview belonging to the persisted source message; never choose a global/latest button. */
+  public async openCloudBrowser(identity: CloudBrowserMessage): Promise<OpenCloudBrowserResult> {
+    const fail = (error: string): OpenCloudBrowserResult => ({ ok: false, error })
+    if (!identity || typeof identity.messageId !== 'string' || !identity.messageId ||
+        typeof identity.sourceUrl !== 'string') return fail('浏览器消息标识无效。')
+    try {
+      const source = new URL(identity.sourceUrl)
+      if (source.origin !== 'https://muse.ai') return fail('浏览器消息来源无效。')
+      const cookies = this.sessionStore.getCookies()
+      if (!cookies || !this.sessionStore.getProfile().isLoggedIn) return fail('请先登录 Muse。')
+      if (this.isFetchingCloudData) return fail('云端正在同步，请稍后重试。')
+      const win = await this.ensureMuseWindow(cookies)
+      win.setSkipTaskbar(false)
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+      return await win.webContents.executeJavaScript(`
+        (async () => {
+          const identity = ${JSON.stringify(identity)}
+          if (location.href !== identity.sourceUrl) {
+            return { ok: false, error: '当前云端会话与此消息不同，请在原生窗口返回对应会话后重试。' }
+          }
+          const matches = Array.from(document.querySelectorAll('[data-message-item="true"]'))
+            .filter(el => el.getAttribute('data-message-id') === identity.messageId)
+          const buttons = matches.length === 1
+            ? matches[0].querySelectorAll('button[aria-label="打开浏览器预览"]') : []
+          if (buttons.length !== 1 || buttons[0].disabled) {
+            return { ok: false, error: '未找到此消息的浏览器预览，可能已过期。请同步消息后重试。' }
+          }
+          buttons[0].click()
+          for (let attempt = 0; attempt < 20; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, 150))
+            if (document.querySelector('button[aria-label="关闭浏览器会话面板"]')) return { ok: true }
+          }
+          return { ok: false, error: '浏览器预览未能打开，请在原生窗口检查后重试。' }
+        })()
+      `)
+    } catch {
+      return fail('无法打开浏览器预览，请稍后重试。')
+    }
+  }
+
+  public clearCloudBrowserStatus() {
+    this.cachedBrowserStatus = { active: false, updatedAt: Date.now() }
+    for (const cb of this.onCloudBrowserStatusCallbacks) cb(this.cachedBrowserStatus)
   }
 
   public async openCloudConsole(target: MuseCloudConsoleTarget = 'main'): Promise<boolean> {

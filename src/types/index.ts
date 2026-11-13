@@ -47,10 +47,18 @@ export interface SecretaryState {
   plugins: MusePlugin[]
 }
 
+export interface CloudBrowserMessage {
+  messageId: string
+  sourceUrl: string
+}
+
+export type OpenCloudBrowserResult = { ok: true } | { ok: false; error: string }
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
+  browser?: CloudBrowserMessage
   attachments?: ChatAttachment[]
   pendingAction?: PendingSecretaryAction
   appliedPlugin?: MusePlugin
@@ -204,6 +212,7 @@ export interface ChatApi {
   getCloudSnapshot: (forceRefresh?: boolean) => Promise<MuseCloudSnapshot>
   readCloudFile: (fileName: string) => Promise<{ fileName: string; content: string }>
   openCloudConsole: (target?: MuseCloudConsoleTarget) => Promise<boolean>
+  openCloudBrowser: (identity: CloudBrowserMessage) => Promise<OpenCloudBrowserResult>
   getCloudBrowserStatus: () => Promise<MuseCloudBrowserStatus>
   onCloudBrowserStatus: (callback: (status: MuseCloudBrowserStatus) => void) => () => void
 }

@@ -160,6 +160,8 @@ function MarkdownContent({
 
 export default function ChatApp() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [browserErrors, setBrowserErrors] = useState<Record<string, string>>({})
+  const [openingBrowser, setOpeningBrowser] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [authProfile, setAuthProfile] = useState<UserProfile>({ isLoggedIn: false })
@@ -1104,10 +1106,10 @@ export default function ChatApp() {
               type="button"
               onClick={() => handleOpenCloudConsole('main')}
               className="liquid-glass-pill flex-shrink-0 px-3 py-1.5 rounded-lg font-terminal text-[11px] text-emerald-100 border-emerald-400/45 bg-emerald-500/20 hover:bg-emerald-500/30 flex items-center gap-1.5"
-              title="在原生 muse.ai 窗口接管云浏览器"
+              title="打开原生 muse.ai 工作台；控制权限由原生页面提供"
             >
               <ExternalLink className="w-3.5 h-3.5 text-emerald-300" />
-              <span>接管</span>
+              <span>打开工作台</span>
             </button>
           </div>
         )}
@@ -1866,12 +1868,41 @@ export default function ChatApp() {
                       isStreaming={msg.status === 'streaming'}
                       onRunCodeBlock={handleRunCodeBlock}
                     />
-                  ) : !msg.attachments || msg.attachments.length === 0 ? (
+                  ) : !msg.browser && (!msg.attachments || msg.attachments.length === 0) ? (
                     <div className="flex items-center gap-2 font-terminal text-xs text-sky-300/80 py-0.5">
                       <span>thinking</span>
                       <span className="animate-terminal-cursor" />
                     </div>
                   ) : null}
+
+                  {msg.browser && (
+                    <div>
+                      <button
+                        type="button"
+                        disabled={openingBrowser !== null}
+                        title="打开此消息的原生浏览器预览；如需控制，请使用原生页面控件"
+                        className="liquid-glass-pill px-3 py-1.5 rounded-lg text-xs text-sky-200 disabled:opacity-50 flex items-center gap-1.5"
+                        onClick={async () => {
+                          setOpeningBrowser(msg.id)
+                          setBrowserErrors(previous => ({ ...previous, [msg.id]: '' }))
+                          try {
+                            const result = await window.chatApi?.openCloudBrowser(msg.browser!)
+                            if (!result?.ok) setBrowserErrors(previous => ({
+                              ...previous, [msg.id]: result?.error || '无法连接浏览器预览。',
+                            }))
+                          } catch {
+                            setBrowserErrors(previous => ({ ...previous, [msg.id]: '打开浏览器失败，请重试。' }))
+                          } finally {
+                            setOpeningBrowser(null)
+                          }
+                        }}
+                      >
+                        <Globe className="w-3.5 h-3.5" />
+                        {openingBrowser === msg.id ? '正在打开…' : '打开浏览器'}
+                      </button>
+                      {browserErrors[msg.id] && <p role="alert" className="mt-1 text-xs text-red-300">{browserErrors[msg.id]}</p>}
+                    </div>
+                  )}
 
                   {/* Live Self-Modifying UI Plugin Control Card */}
                   {msg.appliedPlugin && (

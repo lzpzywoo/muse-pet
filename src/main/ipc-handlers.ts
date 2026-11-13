@@ -712,6 +712,7 @@ export function registerIpcHandlers(
 
   ipcMain.handle('auth:logout', async () => {
     sessionStore.clear()
+    museClient.clearCloudBrowserStatus()
     try {
       const ses = session.fromPartition(MUSE_PARTITION)
       await ses.clearStorageData({ storages: ['cookies'] })
@@ -780,6 +781,10 @@ export function registerIpcHandlers(
 
   ipcMain.handle('cloud:open-console', async (_event, target?: any) => {
     return await museClient.openCloudConsole(target || 'main')
+  })
+
+  ipcMain.handle('cloud:open-browser', async (_event, identity) => {
+    return await museClient.openCloudBrowser(identity)
   })
 
   ipcMain.handle('cloud:get-browser-status', async () => {
