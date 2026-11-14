@@ -10,6 +10,8 @@ import { hostname } from 'node:os'
 import { PcStatusBridge, pcAccount } from './pc-status-bridge'
 import { HubServer, HUB_PORT } from './hub/hub-server'
 import { SystemScreenApp, SYSTEM_SCREEN_APP_ID } from './hub/builtins/system-screen'
+import { SystemSysApp, SYSTEM_SYS_APP_ID } from './hub/builtins/system-sys'
+import { SystemFilesApp, SYSTEM_FILES_APP_ID } from './hub/builtins/system-files'
 import type { HubEvent, LocalToolCall } from './hub/sdk-types'
 import type {
   ChatMessage,
@@ -27,14 +29,17 @@ export function registerIpcHandlers(
 ) {
   const localSecretary = new LocalSecretary()
   const systemScreenApp = new SystemScreenApp()
+  const systemSysApp = new SystemSysApp(localSecretary)
+  const systemFilesApp = new SystemFilesApp(localSecretary)
+  const builtinApps = [systemScreenApp, systemSysApp, systemFilesApp]
   /** Maps secretary approval-card ids → hub taskIds waiting on waitForApproval. */
   const hubApprovalByActionId = new Map<string, string>()
   const hub: HubServer = new HubServer({
     stateFilePath: path.join(app.getPath('userData'), 'hub_state.json'),
     executeTask: async (taskId: string, appId: string, toolId: string, params: any) => {
       try {
-        if (appId === SYSTEM_SCREEN_APP_ID) {
-          const result = await systemScreenApp.execute(toolId, params)
+        const result = await executeBuiltinTool(appId, toolId, params)
+        if (result !== undefined) {
           hub.tasks.complete(taskId, result)
           return
         }
@@ -79,8 +84,18 @@ export function registerIpcHandlers(
     },
   })
   hub.start().catch((err: any) => console.error('[Hub] start failed:', err))
-  hub.registry.register(systemScreenApp.manifest)
-  hub.registry.markBuiltin(SYSTEM_SCREEN_APP_ID)
+  for (const builtin of builtinApps) {
+    hub.registry.register(builtin.manifest)
+    hub.registry.markBuiltin(builtin.manifest.appId)
+  }
+
+  /** Returns a result for known builtins, or undefined when the app is third-party. */
+  async function executeBuiltinTool(appId: string, toolId: string, params: any): Promise<any | undefined> {
+    if (appId === SYSTEM_SCREEN_APP_ID) return systemScreenApp.execute(toolId, params || {})
+    if (appId === SYSTEM_SYS_APP_ID) return systemSysApp.execute(toolId, params || {})
+    if (appId === SYSTEM_FILES_APP_ID) return systemFilesApp.execute(toolId, params || {})
+    return undefined
+  }
 
   hub.bus.subscribe('*', (event: HubEvent) => {
     const chatWin = windowManager.getChatWindow()
@@ -325,10 +340,10 @@ export function registerIpcHandlers(
       /(电脑|系统|本地|当前).*(状态|内存|cpu|负载|卡不卡|运行情况|高占用进程)/i.test(trimmed)
 
     if (isSysCmd || isSysNL) {
-      const snap = await localSecretary.getSystemSnapshot()
+      const snapRes = await systemSysApp.execute('snapshot', {})
       pcBridge.skipLocallyHandled(rawContent)
       return {
-        promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【当前电脑实时硬件与进程状态】\n${snap}\n请根据以上真实本地数据，向用户汇报当前电脑运行健康度与高占用进程情况。\n[/MUSE_LOCAL_CONTEXT]`,
+        promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【当前电脑实时硬件与进程状态】\n${snapRes.snapshot}\n请根据以上真实本地数据，向用户汇报当前电脑运行健康度与高占用进程情况。\n[/MUSE_LOCAL_CONTEXT]`,
       }
     }
 
@@ -347,16 +362,16 @@ export function registerIpcHandlers(
     // 7. File search & read (`/find <kw>`, `/read <path>`)
     if (/^\/find\s+/i.test(trimmed)) {
       const kw = trimmed.replace(/^\/find\s+/i, '').trim()
-      const found = localSecretary.searchLocalFiles(kw)
+      const found = await systemFilesApp.execute('search', { keyword: kw })
       return {
-        promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【本地桌面/下载/文档目录搜索 "${kw}" 结果】\n${found.length > 0 ? found.join('\n') : '未找到匹配文件'}\n请向用户清晰列出找到的文件路径。\n[/MUSE_LOCAL_CONTEXT]`,
+        promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【本地桌面/下载/文档目录搜索 "${kw}" 结果】\n${found.paths?.length > 0 ? found.paths.join('\n') : '未找到匹配文件'}\n请向用户清晰列出找到的文件路径。\n[/MUSE_LOCAL_CONTEXT]`,
       }
     }
 
     if (/^\/read\s+/i.test(trimmed)) {
       const targetPath = trimmed.replace(/^\/read\s+/i, '').trim()
       try {
-        const fileRes = localSecretary.readLocalFileExcerpt(targetPath)
+        const fileRes = await systemFilesApp.execute('read', { path: targetPath })
         return {
           promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【本地文件 ${fileRes.resolvedPath} 内容】\n${fileRes.content}\n请基于该文件的真实内容进行总结或解答。\n[/MUSE_LOCAL_CONTEXT]`,
         }
@@ -433,6 +448,19 @@ ${result.note || ''}
 画面尺寸: ${result.width}×${result.height}
 采集时间: ${new Date(result.capturedAt || Date.now()).toISOString()}
 图像数据已随本条消息的多模态附件提交，请直接查看画面并回答用户。`
+      }
+
+      if (call.appId === SYSTEM_SYS_APP_ID || call.appId === SYSTEM_FILES_APP_ID) {
+        const result = await executeBuiltinTool(call.appId, call.toolId, call.parameters || {})
+        const body =
+          call.appId === SYSTEM_SYS_APP_ID
+            ? String(result?.snapshot || '')
+            : call.toolId === 'search'
+              ? (result?.paths || []).join('\n') || '未找到匹配文件'
+              : `${result?.resolvedPath || ''}\n${result?.content || ''}`
+        return `[MUSE_LOCAL_TOOL_RESULT appId=${call.appId} toolId=${call.toolId}]
+${result?.note || ''}
+${body}`
       }
 
       const res = await hub.dispatch({
@@ -1050,7 +1078,7 @@ ${err?.message || String(err)}`
         online: a.online,
         activeTasks: a.activeTasks,
         lastHeartbeat: a.lastHeartbeat,
-        builtin: hub.registry.isBuiltin(a.manifest.appId) || a.manifest.appId === SYSTEM_SCREEN_APP_ID,
+        builtin: hub.registry.isBuiltin(a.manifest.appId),
         tools: a.manifest.tools.map((t: any) => ({
           toolId: t.toolId,
           name: t.name,
@@ -1087,10 +1115,8 @@ ${err?.message || String(err)}`
 
   ipcMain.handle('hub:run-tool', async (_event, appId: string, toolId: string, params: any) => {
     try {
-      if (appId === SYSTEM_SCREEN_APP_ID) {
-        const result = await systemScreenApp.execute(toolId, params || {})
-        return { ok: true, result }
-      }
+      const builtin = await executeBuiltinTool(appId, toolId, params)
+      if (builtin !== undefined) return { ok: true, result: builtin }
       const res = await hub.dispatch({ appId, toolId, parameters: params || {}, origin: 'user' })
       return { ok: true, ...res }
     } catch (err: any) {
@@ -1107,7 +1133,7 @@ ${err?.message || String(err)}`
     if (!appId || typeof appId !== 'string') {
       return { ok: false, error: 'invalid appId' }
     }
-    if (appId === SYSTEM_SCREEN_APP_ID) {
+    if (hub.registry.isBuiltin(appId)) {
       return { ok: false, error: '内置应用不可移除' }
     }
     const existed = hub.registry.get(appId)

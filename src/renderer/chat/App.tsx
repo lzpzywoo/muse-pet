@@ -1626,7 +1626,7 @@ export default function ChatApp() {
 
             {(!hubState?.apps || hubState.apps.length === 0) && (
               <div className="text-[11px] text-slate-400">
-                暂无已接入的软件。内置「系统屏幕视觉」应始终在线；第三方应用接入后可在此查看、调用或移除。
+                暂无已接入的软件。内置「系统屏幕视觉 / 系统状态 / 本地文件」应始终在线；第三方应用接入后可在此查看、调用或移除。
               </div>
             )}
 
