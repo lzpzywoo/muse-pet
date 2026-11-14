@@ -358,7 +358,17 @@ export class HubServer {
           return
         }
         if (sub === 'approve' || sub === 'reject') {
-          this.resolveApproval(taskId, sub === 'approve')
+          const approved = sub === 'approve'
+          const hadWaiter = this.resolveApproval(taskId, approved)
+          // HTTP-created tasks may sit in awaiting_approval with no in-process waiter.
+          if (!hadWaiter && task.status === 'awaiting_approval') {
+            if (approved) {
+              this.tasks.markDispatched(taskId)
+              this.deliverTask(taskId, task.appId, task.toolId, task.parameters)
+            } else {
+              this.tasks.cancel(taskId, 'rejected')
+            }
+          }
           this.json(res, 200, { ok: true })
           return
         }
