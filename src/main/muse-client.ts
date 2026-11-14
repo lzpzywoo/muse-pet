@@ -37,18 +37,50 @@ export const MUSE_PARTITION = 'persist:meta_muse'
 /** Isolation stylesheet id — only injected into the dedicated cloud-browser window */
 const CLOUD_BROWSER_ISOLATION_STYLE_ID = 'muse-pet-cloud-browser-isolation'
 
-/** Verified isolation CSS: hide Muse chrome; fullscreen only the official browser panel */
+/** Isolation CSS: strip Muse chrome/overlays; keep only the official browser panel */
 const CLOUD_BROWSER_ISOLATION_CSS = `
-body * { visibility: hidden !important; }
+html, body {
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  background: #0b0d12 !important;
+}
+body * {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
 [data-testid="browser-session-side-panel"],
-[data-testid="browser-session-side-panel"] * { visibility: visible !important; }
+[data-testid="browser-session-side-panel"] * {
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
 [data-testid="browser-session-side-panel"] {
   position: fixed !important;
   inset: 0 !important;
   width: 100vw !important;
   height: 100vh !important;
-  z-index: 2147483647 !important;
-  background: var(--color-fill-dialog, #fff) !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  z-index: 2147483646 !important;
+  background: #0b0d12 !important;
+}
+/* Invite / marketing / modal chrome — always hidden in dedicated browser window */
+[role="dialog"],
+[role="alertdialog"],
+[aria-modal="true"],
+[data-testid*="invite" i],
+[data-testid*="upsell" i],
+[data-testid*="referral" i],
+[data-pel-click*="invite" i] {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  opacity: 0 !important;
 }
 `.trim()
 
@@ -607,8 +639,11 @@ export class MuseClient {
       this.cloudBrowserWindow = new BrowserWindow({
         width: 1280,
         height: 860,
+        minWidth: 720,
+        minHeight: 520,
         title: 'Muse Cloud Browser',
         autoHideMenuBar: true,
+        backgroundColor: '#0b0d12',
         show: false,
         skipTaskbar: false,
         webPreferences: {
@@ -1271,6 +1306,24 @@ export class MuseClient {
               document.head.appendChild(style)
             }
             style.textContent = isolationCss
+
+            // Keep invite/marketing portals suppressed if Muse re-mounts them later.
+            const scrubOverlays = () => {
+              for (const el of Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"], [aria-modal="true"]'))) {
+                if (el.closest('[data-testid="browser-session-side-panel"]')) continue
+                el.setAttribute('data-muse-pet-hidden-overlay', '1')
+                el.style.setProperty('display', 'none', 'important')
+                el.style.setProperty('visibility', 'hidden', 'important')
+                el.style.setProperty('pointer-events', 'none', 'important')
+              }
+            }
+            scrubOverlays()
+            if (!window.__musePetCloudBrowserOverlayObserver) {
+              const observer = new MutationObserver(() => scrubOverlays())
+              observer.observe(document.documentElement, { childList: true, subtree: true })
+              window.__musePetCloudBrowserOverlayObserver = observer
+            }
+
             return { ok: true }
           }
 
