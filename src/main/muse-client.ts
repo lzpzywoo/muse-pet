@@ -197,19 +197,13 @@ export class MuseClient {
         // Real muse.ai mounts several data-hatch-chat-column shells; only the role=log history carries motion + messages.
         const col = document.querySelector('[data-hatch-chat-column="true"][role="log"], [data-hatch-chat-column="true"][data-initial-history-motion], [role="log"][data-initial-history-motion]')
         const ta = document.querySelector('textarea')
-        let bottom = true
-        for (let el = col; el; el = el.parentElement) {
-          if (el.scrollHeight > el.clientHeight + 20 && getComputedStyle(el).overflowY !== 'visible') {
-            if (el.scrollHeight - el.scrollTop - el.clientHeight > 40) bottom = false
-          }
-        }
         // Scope connection text to page chrome / announcers; ordinary chat words like "offline" must not unready the bridge.
         const connectionSignals = Array.from(document.querySelectorAll(
           '[data-hatch-connection-status-announcer], [data-hatch-composer-support-access-status], [data-hatch-composer-lock-status], [role="status"], [role="alert"], [aria-live]'
         )).filter(el => !el.closest('[data-message-item="true"]') && el.getAttribute('role') !== 'log')
-          .map(el => el.innerText || '').join('\n')
+          .map(el => el.innerText || '').join(' ')
         const ready = location.origin === 'https://muse.ai' && location.pathname === '/' && !location.search &&
-          navigator.onLine && document.readyState === 'complete' && !!ta && !!col && bottom &&
+          navigator.onLine && document.readyState === 'complete' && !!ta && !!col &&
           col.getAttribute('data-initial-history-motion') === 'complete' &&
           !document.querySelector('[aria-busy="true"], [role="progressbar"]') &&
           !/reconnecting|disconnected|offline|connection lost|重新连接|连接断开|网络异常/i.test(connectionSignals)

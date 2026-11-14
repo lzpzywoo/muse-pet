@@ -4,7 +4,7 @@ const { buildSync } = require('esbuild')
 const Module = require('node:module')
 const output = buildSync({ entryPoints: ['src/main/pc-status-bridge.ts'], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text
 const mod = new Module('pc-fixture'); mod._compile(output, 'pc-fixture.cjs')
-const { PcStatusBridge, pcAccount, PcReportNotSubmitted } = mod.exports
+const { PcStatusBridge, pcAccount, PcReportNotSubmitted, isPcStatusQuery } = mod.exports
 const tick = () => new Promise(r => setImmediate(r))
 const msg = (id, content = '/pc status', role = 'user') => ({ id, content, role })
 function fixture(saved) {
@@ -144,4 +144,35 @@ test('definitely-not-submitted busy restores same ready report; uncertain send n
   await bridge.observe({ account: 'a', conversation: 'root', ready: true, messages: [msg('a'), msg('b')] })
   await tick()
   assert.equal(attempts, 2); assert.equal(captures, 1)
+})
+test('natural language status queries and default enabled on initial bind', async () => {
+  assert.equal(isPcStatusQuery('/pc status'), true)
+  assert.equal(isPcStatusQuery('/sys'), true)
+  assert.equal(isPcStatusQuery('电脑状态'), true)
+  assert.equal(isPcStatusQuery('看看电脑卡不卡'), true)
+  assert.equal(isPcStatusQuery('电脑现在怎么样'), true)
+  assert.equal(isPcStatusQuery('查电脑'), true)
+  assert.equal(isPcStatusQuery('我想买台电脑'), false)
+  assert.equal(isPcStatusQuery('> /pc status'), false)
+  assert.equal(isPcStatusQuery('[MUSE_PC_STATUS]'), false)
+
+  // Default-enabled on initial bind: no manual /pc on needed
+  const f = fixture()
+  assert.equal(f.bridge.ledger.enabled, true)
+  await f.observe([msg('old')])
+  await f.observe([msg('old'), msg('nl1', '帮我看看电脑状态')])
+  assert.equal(f.captures, 1)
+  await f.observe([msg('old'), msg('nl1', '帮我看看电脑状态'), msg('nl2', '电脑卡不卡')])
+  assert.equal(f.captures, 2)
+})
+test('locally handled status query is not captured again from the cloud echo', async () => {
+  const f = fixture()
+  await f.observe([msg('a')])
+  f.bridge.skipLocallyHandled('电脑卡不卡')
+  await f.observe([msg('a'), msg('echo', '电脑卡不卡')])
+  assert.equal(f.captures, 0)
+  assert.equal(f.bridge.ledger.tasks.length, 0)
+  // A different query from the phone still works.
+  await f.observe([msg('a'), msg('echo', '电脑卡不卡'), msg('phone', '电脑状态')])
+  assert.equal(f.captures, 1)
 })

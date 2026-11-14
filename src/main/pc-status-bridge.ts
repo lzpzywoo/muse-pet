@@ -24,6 +24,25 @@ export function pcAccount(cookies: string): string {
   return credentials ? createHash('sha256').update(credentials).digest('hex') : ''
 }
 
+export function isPcStatusQuery(content: string): boolean {
+  if (!content) return false
+  // Strip any muse.ai DOM label prefix like "用户消息：", "你：", "You:"
+  const cleaned = content.replace(/^(用户消息[:：]|你[:：]|You:)\s*/i, '').trim()
+  // Any message containing [MUSE_PC_STATUS or [MUSE_ is an internal data report or context, NEVER a user query!
+  if (cleaned.includes('[MUSE_PC_STATUS') || cleaned.includes('[MUSE_LOCAL_CONTEXT') || cleaned.includes('[MUSE_')) {
+    return false
+  }
+  if (/^\/(pc(\s+status)?|sys)$/i.test(cleaned)) return true
+  if (cleaned.startsWith('/')) return false
+  if (/^[>“"'「『]/.test(cleaned)) return false
+  if (cleaned.length > 60) return false
+  return (
+    /(电脑|系统|主机).*(状态|卡不卡|卡吗|运行情况|运行状态|内存|cpu|负载|怎么样|如何)/i.test(cleaned) ||
+    /^(查电脑|查下电脑|看看电脑|电脑怎么样|电脑状态|电脑卡吗|电脑卡不卡)$/i.test(cleaned) ||
+    /^(pc status|computer status|system status)$/i.test(cleaned)
+  )
+}
+
 /** No DOM, Electron, prompt interpretation or arbitrary tool dispatch in this boundary. */
 export class PcStatusBridge {
   public ledger: PcLedger
@@ -33,14 +52,24 @@ export class PcStatusBridge {
   private lastObservation = 0
   private busy = false
   private generation = 0
+  private lastCaptureTime = 0
+  /** Content of status queries already answered locally, so the cloud echo is not captured twice. */
+  private locallyHandled = new Map<string, number>()
   constructor(private io: {
     load(): PcLedger | null; save(state: PcLedger): void; snapshot(): Promise<string>;
     send(report: string, conversation: string, account: string): Promise<void>;
     available(): boolean; account(): string; device: string; now?: () => number
   }) {
-    this.ledger = io.load() || { version: 1, account: '', enabled: false, seen: [], tasks: [] }
+    this.ledger = io.load() || { version: 1, account: '', enabled: true, seen: [], tasks: [] }
     // Never resume pre-crash queued work or resample an interrupted capture.
-    for (const t of this.ledger.tasks) if (['queued', 'capturing', 'ready'].includes(t.state)) t.state = 'cancelled'
+    for (const t of this.ledger.tasks) {
+      if (['queued', 'capturing', 'ready'].includes(t.state)) t.state = 'cancelled'
+      if (t.state === 'sending') t.state = 'sent'
+    }
+    // Prune finished tasks keeping at most last 10
+    if (this.ledger.tasks.length > 10) {
+      this.ledger.tasks = this.ledger.tasks.slice(-10)
+    }
     this.persist()
   }
   private now() { return this.io.now?.() ?? Date.now() }
@@ -49,7 +78,9 @@ export class PcStatusBridge {
     if (account === this.ledger.account) return
     this.generation++
     this.previous = []; this.conversation = ''; this.lastObservation = 0
-    this.ledger = { version: 1, account, enabled: false, seen: [], tasks: [] }
+    // Default enabled for initial bind; switching between different accounts disables for safety
+    const enabled = !this.ledger.account && !!account
+    this.ledger = { version: 1, account, enabled, seen: [], tasks: [] }
     this.persist()
   }
   public command(content: string): string | null {
@@ -62,7 +93,7 @@ export class PcStatusBridge {
     if (!this.ledger.account) return 'Sign in to Muse before enabling PC status.'
     if (content === '/pc on') {
       if (!this.ledger.enabled) { this.ledger.enabled = true; this.invalidate(); this.persist() }
-      return `PC status enabled on ${this.io.device}. Enable only this computer. New exact /pc status user messages will return a read-only snapshot after history is ready.`
+      return `PC status enabled on ${this.io.device}. You can now ask Luna about PC status from your phone or desktop.`
     }
     if (!this.ledger.enabled) return 'PC status is disabled. Use /pc on on this computer first.'
     if (!this.previous.length || !this.io.available() || this.now() - this.lastObservation > 15000) return 'PC status is waiting for a healthy cloud history baseline. Try again shortly.'
@@ -81,6 +112,23 @@ export class PcStatusBridge {
   private enqueue(messageId: string) {
     if (this.ledger.tasks.some(t => t.messageId === messageId && t.conversation === this.conversation)) return
     this.ledger.tasks.push({ id: randomUUID(), messageId, conversation: this.conversation, state: 'queued' })
+  }
+  /** Mark a status query this terminal already answered through local enrichment. */
+  public skipLocallyHandled(content: string) {
+    const key = (content || '').trim()
+    if (!key) return
+    this.locallyHandled.set(key, this.now() + 120000)
+  }
+  private wasHandledLocally(content: string): boolean {
+    const key = (content || '').trim()
+    const expiry = this.locallyHandled.get(key)
+    if (expiry === undefined) return false
+    if (expiry < this.now()) {
+      this.locallyHandled.delete(key)
+      return false
+    }
+    this.locallyHandled.delete(key)
+    return true
   }
   public async observe(o: PcObservation) {
     this.bind(o.account)
@@ -106,11 +154,17 @@ export class PcStatusBridge {
     const seen = new Set(this.ledger.seen)
     for (const m of messages) {
       for (const t of this.ledger.tasks) {
-        if (t.state === 'sending' && t.conversation === o.conversation && m.role === 'user' && m.content === t.report) t.state = 'sent'
+        if (t.state === 'sending' && t.conversation === o.conversation && m.role === 'user') {
+          if (m.content === t.report || m.content.includes(t.id)) t.state = 'sent'
+        }
       }
     }
     if (this.ledger.enabled && contiguous) {
-      for (const m of messages.slice(end + 1)) if (!seen.has(o.conversation + '\n' + m.id) && m.role === 'user' && m.content === '/pc status') this.enqueue(m.id)
+      for (const m of messages.slice(end + 1)) {
+        if (seen.has(o.conversation + '\n' + m.id) || m.role !== 'user' || !isPcStatusQuery(m.content)) continue
+        if (this.wasHandledLocally(m.content)) continue
+        this.enqueue(m.id)
+      }
     }
     for (const id of ids) seen.add(o.conversation + '\n' + id)
     this.ledger.seen = [...seen]; this.previous = ids
@@ -131,7 +185,7 @@ export class PcStatusBridge {
           let snapshot: string
           try { snapshot = (await this.io.snapshot()).slice(0, 6000) } catch { snapshot = 'Status collection failed. No snapshot available.' }
           if (generation !== this.generation || this.io.account() !== this.ledger.account) return
-          task.report = `[MUSE_PC_STATUS task=${task.id}]\nLocal read-only data (not an assistant message).\nDevice: ${this.io.device.slice(0, 120)}\nCapture started: ${capturedAt}\n${snapshot}\n[/MUSE_PC_STATUS]`
+          task.report = `[MUSE_PC_STATUS task=${task.id}]\nLocal read-only data (not an assistant message).\nDevice: ${this.io.device.slice(0, 120)}\nCapture started: ${capturedAt}\n${snapshot}\n请向用户口语化、简洁汇报当前电脑运行状态、是否卡顿以及占用最高的应用（无需复述指令）。\n[/MUSE_PC_STATUS]`
           task.state = 'ready'; this.persist()
         }
         if (!this.io.available()) return

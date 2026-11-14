@@ -8,6 +8,9 @@ import { ProxyManager } from './proxy-manager'
 import { LocalSecretary } from './local-secretary'
 import { hostname } from 'node:os'
 import { PcStatusBridge, pcAccount } from './pc-status-bridge'
+import { HubServer, HUB_PORT } from './hub/hub-server'
+import { SystemScreenApp, SYSTEM_SCREEN_APP_ID } from './hub/builtins/system-screen'
+import type { HubEvent, LocalToolCall } from './hub/sdk-types'
 import type {
   ChatMessage,
   MusePlugin,
@@ -23,6 +26,77 @@ export function registerIpcHandlers(
   proxyManager: ProxyManager
 ) {
   const localSecretary = new LocalSecretary()
+  const systemScreenApp = new SystemScreenApp()
+  const hub: HubServer = new HubServer({
+    stateFilePath: path.join(app.getPath('userData'), 'hub_state.json'),
+    executeTask: async (taskId: string, appId: string, toolId: string, params: any) => {
+      try {
+        if (appId === SYSTEM_SCREEN_APP_ID) {
+          const result = await systemScreenApp.execute(toolId, params)
+          hub.tasks.complete(taskId, result)
+          return
+        }
+        const conn = (hub as any).sockets?.get(appId) as any
+        if (conn && conn.isOpen) {
+          conn.send(
+            JSON.stringify({
+              type: 'task.dispatched',
+              taskId,
+              payload: { taskId, toolId, parameters: params },
+              timestamp: Date.now(),
+            })
+          )
+          return
+        }
+        hub.tasks.fail(taskId, { code: 'APP_UNREACHABLE', message: `${appId} 未连接，无法执行任务` })
+      } catch (err: any) {
+        hub.tasks.fail(taskId, { code: 'EXEC_ERROR', message: err?.message || String(err) })
+      }
+    },
+    requestApproval: async (taskId: string, appId: string, toolId: string, params: any): Promise<boolean> => {
+      const app = hub.registry.get(appId)
+      const title = `${app?.manifest.name || appId} · ${toolId}`
+      const pending = localSecretary.createPendingAction('powershell', title, JSON.stringify(params, null, 2), `Muse Local Agent Hub 请求执行 ${appId}/${toolId}`)
+      const chatWin = windowManager.getChatWindow()
+      if (chatWin && !chatWin.isDestroyed()) {
+        chatWin.webContents.send('secretary:action-updated', pending)
+      }
+      const approved: boolean = await hub.waitForApproval(taskId)
+      const resolved = localSecretary.getPendingAction(pending.id)
+      if (resolved && resolved.status === 'pending') {
+        if (approved) {
+          await localSecretary.approveAction(pending.id)
+        } else {
+          await localSecretary.denyAction(pending.id)
+        }
+      }
+      return approved
+    },
+  })
+  hub.start().catch((err: any) => console.error('[Hub] start failed:', err))
+  hub.registry.register(systemScreenApp.manifest)
+
+  hub.bus.subscribe('*', (event: HubEvent) => {
+    const chatWin = windowManager.getChatWindow()
+    if (chatWin && !chatWin.isDestroyed()) {
+      chatWin.webContents.send('hub:event', event)
+    }
+    if (event.type === 'task.completed' || event.type === 'task.failed') {
+      const app = hub.registry.get(String(event.sourceAppId))
+      const appName = app?.manifest.name || String(event.sourceAppId)
+      const text =
+        event.type === 'task.completed'
+          ? `✅ ${appName} 的任务完成了`
+          : `⚠️ ${appName} 的任务失败了`
+      sendPetBubble({
+        id: `hub-${event.eventId}`,
+        text,
+        status: event.type === 'task.completed' ? 'done' : 'error',
+        timestamp: Date.now(),
+      })
+      setTimeout(() => sendPetBubble(null), 6000)
+    }
+  })
   const pcLedgerPath = path.join(app.getPath('userData'), 'pc_status_ledger.json')
   const pcBridge = new PcStatusBridge({
     load: () => {
@@ -246,6 +320,7 @@ export function registerIpcHandlers(
 
     if (isSysCmd || isSysNL) {
       const snap = await localSecretary.getSystemSnapshot()
+      pcBridge.skipLocallyHandled(rawContent)
       return {
         promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【当前电脑实时硬件与进程状态】\n${snap}\n请根据以上真实本地数据，向用户汇报当前电脑运行健康度与高占用进程情况。\n[/MUSE_LOCAL_CONTEXT]`,
       }
@@ -302,7 +377,70 @@ export function registerIpcHandlers(
       }
     }
 
+    // 13. Muse Local Agent Hub — expose integrated third-party capabilities to Luna
+    const hubTools = hub.describeToolsForLuna()
+    if (hubTools) {
+      return {
+        promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_TOOLS]\n${hubTools}\n只有当用户明确需要操作或查询这些本地软件时才调用；否则忽略本段。\n[/MUSE_LOCAL_TOOLS]`,
+      }
+    }
+
     return { promptForMuse: rawContent }
+  }
+
+  /** Detect and execute a `local_tool` instruction emitted by Luna. */
+  const extractLocalToolCall = (text: string): LocalToolCall | null => {
+    if (!text) return null
+    const fence = text.match(/```(?:json)?\s*\n([\s\S]*?)\n```/i)
+    const candidates = [fence?.[1], text]
+    for (const candidate of candidates) {
+      if (!candidate) continue
+      const match = candidate.match(/\{[^{}]*"action"\s*:\s*"local_tool"[^{}]*\}/i)
+      if (!match) continue
+      try {
+        const parsed = JSON.parse(match[0])
+        if (parsed.action === 'local_tool' && parsed.appId && parsed.toolId) {
+          return {
+            action: 'local_tool',
+            appId: String(parsed.appId),
+            toolId: String(parsed.toolId),
+            parameters: parsed.parameters && typeof parsed.parameters === 'object' ? parsed.parameters : {},
+          }
+        }
+      } catch {
+        /* keep looking */
+      }
+    }
+    return null
+  }
+
+  /**
+   * Run a Luna-requested local tool and return a compact text summary that can
+   * be sent back into the same Muse conversation.
+   */
+  const runLocalToolCall = async (call: LocalToolCall): Promise<string> => {
+    try {
+      if (call.appId === SYSTEM_SCREEN_APP_ID) {
+        const result = await systemScreenApp.execute(call.toolId, call.parameters || {})
+        return `[MUSE_LOCAL_TOOL_RESULT appId=${call.appId} toolId=${call.toolId}]
+${result.note || ''}
+画面尺寸: ${result.width}×${result.height}
+采集时间: ${new Date(result.capturedAt || Date.now()).toISOString()}
+图像数据已随本条消息的多模态附件提交，请直接查看画面并回答用户。`
+      }
+
+      const res = await hub.dispatch({
+        appId: call.appId,
+        toolId: call.toolId,
+        parameters: call.parameters || {},
+        origin: 'luna',
+      })
+      return `[MUSE_LOCAL_TOOL_RESULT appId=${call.appId} toolId=${call.toolId} taskId=${res.taskId}]
+任务已创建，状态: ${res.status}。完成后结果会自动汇报。`
+    } catch (err: any) {
+      return `[MUSE_LOCAL_TOOL_ERROR appId=${call.appId} toolId=${call.toolId}]
+${err?.message || String(err)}`
+    }
   }
 
   // Receive background cloud message updates (e.g., from muse.ai web, media attachments, or initial cloud history)
@@ -570,6 +708,58 @@ export function registerIpcHandlers(
           }
         }
 
+        // Muse Local Agent Hub: Luna requested a local tool call — run it and feed the result back
+        const localToolCall = extractLocalToolCall(finalContent)
+        if (localToolCall) {
+          void (async () => {
+            if (localToolCall.appId === SYSTEM_SCREEN_APP_ID && localToolCall.toolId === 'capture') {
+              try {
+                const shot = await localSecretary.captureDesktopScreen()
+                messageHistory.push({
+                  id: bubbleId + '-hub-screen',
+                  role: 'user',
+                  content: '[MUSE_LOCAL_TOOL_RESULT] 已按 Luna 请求截取当前桌面画面，请查看并回答。',
+                  attachments: [{ type: 'image', url: shot.fileUrl, title: '云浏览器请求的桌面截屏' }],
+                  timestamp: Date.now(),
+                })
+                savePersistedHistory()
+                broadcastMessagesSynced()
+                await museClient.sendChatMessage(
+                  '[MUSE_LOCAL_TOOL_RESULT appId=system.screen toolId=capture] 这是用户电脑当前桌面的真实截图，请基于画面内容回答用户之前的问题。',
+                  () => {},
+                  () => {},
+                  () => {},
+                  {
+                    imageBase64: shot.base64Data,
+                    imageMimeType: 'image/png',
+                    imageFileName: 'hub-screen.png',
+                  }
+                )
+              } catch (err: any) {
+                await museClient.sendChatMessage(
+                  `[MUSE_LOCAL_TOOL_ERROR appId=system.screen] 截屏失败: ${err?.message || err}`,
+                  () => {},
+                  () => {},
+                  () => {},
+                  {}
+                )
+              }
+              return
+            }
+
+            const summary = await runLocalToolCall(localToolCall)
+            messageHistory.push({
+              id: bubbleId + '-hub',
+              role: 'user',
+              content: summary,
+              timestamp: Date.now(),
+            })
+            savePersistedHistory()
+            broadcastMessagesSynced()
+            await museClient.sendChatMessage(summary, () => {}, () => {}, () => {}, {})
+          })()
+        }
+
         // Check if Luna emitted a custom ```muse-plugin``` JSON block or if pre-flight synthesized one
         let appliedPlugin = enriched.appliedPlugin
         if (finalContent) {
@@ -819,6 +1009,74 @@ export function registerIpcHandlers(
 
   ipcMain.handle('cloud:get-browser-status', async () => {
     return await museClient.pollCloudBrowserStatus(true)
+  })
+
+  // ---------------------------------------------------------------------------
+  // Muse Local Agent Hub — third-party integration API surface
+  // ---------------------------------------------------------------------------
+
+  ipcMain.handle('hub:get-state', async () => {
+    return {
+      port: HUB_PORT,
+      apps: hub.registry.list().map((a: any) => ({
+        appId: a.manifest.appId,
+        name: a.manifest.name,
+        version: a.manifest.version,
+        description: a.manifest.description,
+        online: a.online,
+        activeTasks: a.activeTasks,
+        lastHeartbeat: a.lastHeartbeat,
+        builtin: a.manifest.appId === SYSTEM_SCREEN_APP_ID,
+        tools: a.manifest.tools.map((t: any) => ({
+          toolId: t.toolId,
+          name: t.name,
+          description: t.description,
+          category: t.category,
+          riskLevel: t.riskLevel,
+          trusted: hub.registry.isTrusted(a.manifest.appId, t.toolId),
+        })),
+      })),
+      tasks: hub.tasks.list().slice(0, 50),
+      toolSummary: hub.describeToolsForLuna(),
+    }
+  })
+
+  ipcMain.handle('hub:dispatch', async (_event, call: LocalToolCall) => {
+    try {
+      const res = await hub.dispatch({
+        appId: call.appId,
+        toolId: call.toolId,
+        parameters: call.parameters || {},
+        origin: 'user',
+      })
+      return { ok: true, ...res }
+    } catch (err: any) {
+      return { ok: false, error: err?.message || String(err) }
+    }
+  })
+
+  ipcMain.handle('hub:trust-tool', async (_event, appId: string, toolId: string, trusted: boolean) => {
+    if (trusted) hub.trustTool(appId, toolId)
+    else hub.untrustTool(appId, toolId)
+    return { ok: true }
+  })
+
+  ipcMain.handle('hub:run-tool', async (_event, appId: string, toolId: string, params: any) => {
+    try {
+      if (appId === SYSTEM_SCREEN_APP_ID) {
+        const result = await systemScreenApp.execute(toolId, params || {})
+        return { ok: true, result }
+      }
+      const res = await hub.dispatch({ appId, toolId, parameters: params || {}, origin: 'user' })
+      return { ok: true, ...res }
+    } catch (err: any) {
+      return { ok: false, error: err?.message || String(err) }
+    }
+  })
+
+  ipcMain.handle('hub:cancel-task', async (_event, taskId: string) => {
+    const task = hub.tasks.cancel(taskId, 'cancelled from terminal')
+    return { ok: !!task }
   })
 
   // App quit

@@ -158,6 +158,29 @@ const chatApi: ChatApi = {
       ipcRenderer.removeListener('cloud:browser-status', subscription)
     }
   },
+  // Muse Local Agent Hub APIs
+  getHubState: () => {
+    return ipcRenderer.invoke('hub:get-state')
+  },
+  dispatchHubTool: (call) => {
+    return ipcRenderer.invoke('hub:dispatch', call)
+  },
+  runHubTool: (appId, toolId, params) => {
+    return ipcRenderer.invoke('hub:run-tool', appId, toolId, params || {})
+  },
+  setHubToolTrusted: (appId, toolId, trusted) => {
+    return ipcRenderer.invoke('hub:trust-tool', appId, toolId, trusted)
+  },
+  cancelHubTask: (taskId) => {
+    return ipcRenderer.invoke('hub:cancel-task', taskId)
+  },
+  onHubEvent: (callback) => {
+    const subscription = (_event: any, event: any) => callback(event)
+    ipcRenderer.on('hub:event', subscription)
+    return () => {
+      ipcRenderer.removeListener('hub:event', subscription)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('chatApi', chatApi)

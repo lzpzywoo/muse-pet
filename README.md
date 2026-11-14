@@ -50,6 +50,15 @@ Instead of a static sticker or an intrusive rectangular widget, Muse Pet extract
 - **Plugin-Driven Widgets & Alarms**: Alarms, timers, sticky notes, and custom tools are dynamically synthesized and mounted on demand as lightweight widgets rather than bloating the core binary.
 - **Dual-Window Hot Injection**: Dynamically injects scoped CSS (`chatCss`, `petCss`) and interactive HTML/JS widgets (`chatHtml`, `chatJs`, `petHtml`, `petJs`) across both `ChatWindow` and `PetWindow` with a sandboxed `sdk` (`addReminder`, `notify`, `playBeep`, `storage`, `sendCommand`).
 - **One-Click Rollback & Safety Reset**: Every applied UI change renders an inline **Plugin Control Card** to toggle or uninstall it immediately, plus `/reset-ui` to restore default appearance at any time.
+- **Developer Guide**: See [**Plugin Development Guide**](./docs/PLUGIN_DEVELOPMENT.md) for complete SDK specifications, runtime APIs, and code examples.
+
+### 5. 🔌 Local Agent Hub & Unified Integration API (`/hub`)
+- **Extensible Local Tool Discovery**: Built-in HTTP REST (`http://127.0.0.1:19840`) and WebSocket server (`/ws`) allowing any third-party software, background daemon, or Python/Node script to register capabilities with Muse Pet.
+- **Cross-Device Natural Language Dispatch**: Ask Luna on your mobile phone or desktop in casual language (e.g., *"How is my computer running?"*, *"Did my download finish?"*, *"Start rendering"*); Luna queries the registered local tools and replies in natural language.
+- **P1 Built-in Screen Vision (`system.screen`)**: Provides instant, clean desktop screen captures without self-window occlusion so Luna can visually inspect progress bars, queue statuses, or game lobbies.
+- **3-Tier Permission Hierarchy**: Enforces safety via `read-only` (instant pass), `write-safe` (trust toggleable), and `write-dangerous` (mandatory terminal approval card).
+- **Proactive Pet Reactions**: Integrated software can push `task.completed` events, triggering cheerful celebratory speech bubbles above the desktop Pet and mobile notifications.
+- **Integration Guide**: See [**Local Agent Hub Guide**](./docs/LOCAL_AGENT_HUB.md) and sample code in [`examples/third-party-app.cjs`](./examples/third-party-app.cjs).
 
 ---
 
@@ -88,6 +97,7 @@ flowchart LR
 | `/plugin <request>` | UI Engine | Generate & hot-mount a custom UI theme or interactive widget (alarm clock, sticky note, halo, etc.) |
 | `/plugins` | UI Engine | Open the installed UI & widget plugin manager in `/settings` |
 | `/reset-ui` | UI Engine | Disable all custom themes/widgets and restore default UI |
+| `/hub` / `/agent-hub` | Agent Hub | Open the Local Agent Hub drawer to inspect connected applications, tools, and live tasks |
 | `/screen [question]` | Secretary | Capture clean desktop screenshot (excluding Pet/Terminal) for visual Q&A |
 | `/gmail [filter]` | Secretary | Open Gmail in persistent secretary browser (`unread`, `starred`, or query) |
 | `/web <url>` | Secretary | Open webpage, extract readable text, and summarize with Luna |
@@ -161,25 +171,45 @@ npm run dist
 
 ```text
 muse-pet/
+├── docs/
+│   ├── LOCAL_AGENT_HUB.md       # Integration guide & API reference for third-party software
+│   └── PLUGIN_DEVELOPMENT.md    # UI theme & interactive widget plugin development guide
+├── examples/
+│   └── third-party-app.cjs      # Working sample third-party app integrating with the Hub
 ├── src/
 │   ├── main/
 │   │   ├── index.ts             # Electron app lifecycle, single-instance lock, startup orchestration
 │   │   ├── window-manager.ts    # PetWindow & ChatWindow creation, bounds persistence, Alt+Space shortcut
 │   │   ├── muse-client.ts       # Hidden muse.ai driver, React Fiber composer, avatar & media extractor
 │   │   ├── local-secretary.ts   # Screen vision, Gmail/Web, Files/Sys/PS & Self-Modifying UI plugin engine
+│   │   ├── pc-status-bridge.ts  # Seamless cross-device natural language PC telemetry bridge
+│   │   ├── hub/                 # Muse Local Agent Hub core
+│   │   │   ├── hub-server.ts    # HTTP REST & WebSocket server (127.0.0.1:19840)
+│   │   │   ├── registry.ts      # App manifest validation, heartbeat, tool trust management
+│   │   │   ├── auth.ts          # HMAC session token signing & 3-tier risk level evaluation
+│   │   │   ├── task-manager.ts  # Task lifecycle state machine & cancellation
+│   │   │   ├── event-bus.ts     # Internal event routing to Pet bubbles & Chat terminal
+│   │   │   ├── ws.ts            # Minimal RFC 6455 WebSocket server implementation
+│   │   │   ├── sdk-types.ts     # Shared contracts for apps, tools, tasks, and events
+│   │   │   └── builtins/
+│   │   │       └── system-screen.ts # Builtin desktop screen vision app (P1)
 │   │   ├── ipc-handlers.ts      # IPC routing, cloud sync merger, authorization & plugin broadcasting
 │   │   ├── session-store.ts     # safeStorage (DPAPI/Keychain) encrypted cookie persistence
 │   │   ├── proxy-manager.ts     # HTTP/SOCKS5 proxy configuration across Electron sessions
 │   │   └── tray.ts              # System tray menu & window controls
 │   ├── preload/
 │   │   ├── pet.ts               # ContextBridge API for PetWindow (hit-test, drag, avatar, plugins)
-│   │   └── chat.ts              # ContextBridge API for ChatWindow (stream, resize, secretary, plugins)
+│   │   └── chat.ts              # ContextBridge API for ChatWindow (stream, resize, secretary, plugins, hub)
 │   ├── renderer/
 │   │   ├── pet/App.tsx          # 30fps cutout canvas, pixel alpha hit-testing, speech bubble, pet dock
-│   │   ├── chat/App.tsx         # Liquid Glass terminal, 8-way resize, media lightbox, auth & plugin cards
+│   │   ├── chat/App.tsx         # Liquid Glass terminal, 8-way resize, media lightbox, auth, hub & plugin cards
 │   │   └── index.css            # Apple Liquid Glass styles & terminal animations
 │   └── types/
 │       └── index.ts             # Shared TypeScript interfaces & IPC contracts
+├── tests/
+│   ├── hub.test.cjs             # Unit tests for Hub registry, auth, and task manager
+│   ├── hub-server.test.cjs      # Integration tests for Hub HTTP API & WebSocket event pipeline
+│   └── pc-status-bridge.test.cjs# Unit tests for cross-device PC status queries & deduplication
 ├── LICENSE                      # MIT License
 └── README.md                    # Project documentation
 ```

@@ -8,6 +8,8 @@ import type {
   MuseCloudSnapshot,
   MuseCloudConsoleTarget,
   MuseCloudBrowserStatus,
+  MuseHubState,
+  MuseHubEvent,
 } from '../../types'
 import {
   Square,
@@ -38,6 +40,8 @@ import {
   Clock,
   Target,
   Lightbulb,
+  Cpu as CpuIcon,
+  Plug,
 } from 'lucide-react'
 
 // Lightweight Markdown & Code Block Formatter in Liquid Glass Terminal style
@@ -223,6 +227,10 @@ export default function ChatApp() {
 
   // Muse Cloud Hub (/cloud) state
   const [showCloudHub, setShowCloudHub] = useState(false)
+  const [showHubPanel, setShowHubPanel] = useState(false)
+  const [hubState, setHubState] = useState<MuseHubState | null>(null)
+  const [isLoadingHub, setIsLoadingHub] = useState(false)
+  const [runningHubTool, setRunningHubTool] = useState<string | null>(null)
   const [cloudTab, setCloudTab] = useState<'activity' | 'goals' | 'files' | 'console'>('activity')
   const [cloudSnapshot, setCloudSnapshot] = useState<MuseCloudSnapshot | null>(null)
   const [isLoadingCloud, setIsLoadingCloud] = useState(false)
@@ -263,6 +271,16 @@ export default function ChatApp() {
 
   const handleOpenCloudConsole = async (target: MuseCloudConsoleTarget = 'main') => {
     await window.chatApi?.openCloudConsole(target)
+  }
+
+  const refreshHubState = async () => {
+    setIsLoadingHub(true)
+    try {
+      const state = await window.chatApi?.getHubState()
+      if (state) setHubState(state)
+    } finally {
+      setIsLoadingHub(false)
+    }
   }
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -519,6 +537,24 @@ export default function ChatApp() {
       setCloudBrowserStatus(status)
     })
 
+    const unsubHub = window.chatApi?.onHubEvent((event: MuseHubEvent) => {
+      // Keep the hub panel live when it is open.
+      if (showHubPanel) {
+        void refreshHubState()
+      }
+      if (event.type === 'app.registered') {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: String(Date.now()),
+            role: 'assistant',
+            content: `🔌 新软件已接入 Muse Local Agent Hub：${event.payload?.name || event.payload?.appId}`,
+            timestamp: Date.now(),
+          },
+        ])
+      }
+    })
+
     const unsubBounds = window.chatApi?.onBoundsChanged((b) => {
       if (b && b.width && b.height) {
         setWinBounds({ width: b.width, height: b.height })
@@ -534,9 +570,10 @@ export default function ChatApp() {
       unsubSecAction?.()
       unsubSecState?.()
       unsubBrowser?.()
+      unsubHub?.()
       unsubBounds?.()
     }
-  }, [])
+  }, [showHubPanel])
 
   const handleClear = async () => {
     await window.chatApi?.clearMessages()
@@ -579,6 +616,13 @@ export default function ChatApp() {
     }
     if (cmd === '/proxy' || cmd === '/settings' || cmd === '/net' || cmd === '/theme' || cmd === '/plugins') {
       setShowSettings((s) => !s)
+      return true
+    }
+    if (cmd === '/hub' || cmd === 'hub' || cmd === '/agent-hub' || cmd === '/integrations') {
+      setShowSettings(false)
+      setShowCloudHub(false)
+      setShowHubPanel((s) => !s)
+      void refreshHubState()
       return true
     }
     if (cmd === '/reset-ui') {
@@ -1058,6 +1102,23 @@ export default function ChatApp() {
               <span>/cloud</span>
             </button>
             <button
+              onClick={() => {
+                setShowCloudHub(false)
+                setShowSettings(false)
+                setShowHubPanel((s) => !s)
+                void refreshHubState()
+              }}
+              title="Muse Local Agent Hub：已接入的本地软件、能力与任务 (/hub)"
+              className={`liquid-glass-pill px-2 py-1 rounded-lg flex items-center gap-1 transition-all ${
+                showHubPanel
+                  ? 'text-fuchsia-300 border-fuchsia-400/50 bg-fuchsia-500/20'
+                  : 'text-slate-200/85 hover:text-white'
+              }`}
+            >
+              <Plug className="w-3 h-3 text-fuchsia-400" />
+              <span>/hub</span>
+            </button>
+            <button
               onClick={handleClear}
               title="清屏 (/clear)"
               className="liquid-glass-pill px-2 py-1 rounded-lg text-slate-200/85 hover:text-white transition-all"
@@ -1493,6 +1554,190 @@ export default function ChatApp() {
           </div>
         )}
 
+        {/* Muse Local Agent Hub Panel (/hub · Integrated apps, tools & tasks) */}
+        {showHubPanel && (
+          <div className="no-drag bg-[#07090f]/95 backdrop-blur-2xl border-b border-white/15 px-4 py-3.5 space-y-3 text-xs animate-in slide-in-from-top-2 duration-200 max-h-[430px] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-white/10 pb-2">
+              <div className="flex items-center gap-2 text-white font-terminal text-xs">
+                <Plug className="w-3.5 h-3.5 text-fuchsia-400" />
+                <span>local agent hub · 已接入的本地软件与能力</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void refreshHubState()}
+                  disabled={isLoadingHub}
+                  className="liquid-glass-pill px-2 py-0.5 rounded-md font-terminal text-[10.5px] text-sky-200 flex items-center gap-1 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isLoadingHub ? 'animate-spin' : ''}`} />
+                  <span>刷新</span>
+                </button>
+                <button
+                  onClick={() => setShowHubPanel(false)}
+                  className="text-slate-400 hover:text-white"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="text-[11px] text-slate-400 leading-relaxed">
+              本地 API：<code className="text-sky-300 font-terminal">http://127.0.0.1:{hubState?.port ?? 19840}</code>
+              <span className="mx-1.5">·</span>
+              任何软件接入后即可被 Luna 调度。手机问「看看我电脑」会自动调用系统屏幕视觉。
+            </div>
+
+            {(!hubState?.apps || hubState.apps.length === 0) && (
+              <div className="text-[11px] text-slate-400">暂无已接入的软件。系统屏幕视觉应始终在线。</div>
+            )}
+
+            <div className="space-y-2">
+              {(hubState?.apps || []).map((app) => (
+                <div
+                  key={app.appId}
+                  className="p-2.5 rounded-xl bg-white/[0.04] border border-white/10 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-slate-100 font-medium text-[11.5px] flex items-center gap-1.5">
+                        {app.builtin ? (
+                          <CpuIcon className="w-3 h-3 text-emerald-300 flex-shrink-0" />
+                        ) : (
+                          <Plug className="w-3 h-3 text-fuchsia-300 flex-shrink-0" />
+                        )}
+                        <span className="truncate">{app.name}</span>
+                        {app.builtin && (
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/35 text-emerald-300 text-[9.5px] flex-shrink-0">
+                            内置
+                          </span>
+                        )}
+                      </div>
+                      <div className="font-terminal text-[10px] text-slate-500 truncate">{app.appId}</div>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded font-terminal text-[10px] flex-shrink-0 ${
+                        app.online
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          : 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
+                      }`}
+                    >
+                      {app.online ? '在线' : '离线'}
+                    </span>
+                  </div>
+                  <div className="text-[10.5px] text-slate-400">{app.description}</div>
+                  <div className="space-y-1">
+                    {app.tools.map((tool) => (
+                      <div
+                        key={tool.toolId}
+                        className="flex items-center justify-between gap-2 px-2 py-1 rounded-lg bg-black/30 border border-white/[0.07]"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-terminal text-[10.5px] text-slate-200 truncate">
+                            {tool.name}
+                            <span className="text-slate-500"> · {tool.toolId}</span>
+                          </div>
+                          <div className="text-[9.5px] text-slate-500 truncate">{tool.description}</div>
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <span
+                            className={`px-1.5 py-0.5 rounded font-terminal text-[9px] ${
+                              tool.riskLevel === 'read-only'
+                                ? 'bg-sky-500/20 text-sky-300'
+                                : tool.riskLevel === 'write-safe'
+                                  ? 'bg-amber-500/20 text-amber-300'
+                                  : 'bg-rose-500/20 text-rose-300'
+                            }`}
+                          >
+                            {tool.riskLevel}
+                          </span>
+                          {tool.riskLevel !== 'read-only' && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await window.chatApi?.setHubToolTrusted(app.appId, tool.toolId, !tool.trusted)
+                                void refreshHubState()
+                              }}
+                              className={`px-1.5 py-0.5 rounded font-terminal text-[9px] border transition-all ${
+                                tool.trusted
+                                  ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300'
+                                  : 'bg-white/5 border-white/15 text-slate-400 hover:text-white'
+                              }`}
+                            >
+                              {tool.trusted ? '已信任' : '需批准'}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            disabled={runningHubTool !== null || !app.online}
+                            onClick={async () => {
+                              const key = `${app.appId}/${tool.toolId}`
+                              setRunningHubTool(key)
+                              try {
+                                const res = await window.chatApi?.runHubTool(app.appId, tool.toolId, {})
+                                if (!res?.ok) {
+                                  setMessages((prev) => [
+                                    ...prev,
+                                    {
+                                      id: String(Date.now()),
+                                      role: 'assistant',
+                                      content: `⚠️ 调用 ${key} 失败：${res?.error || '未知错误'}`,
+                                      timestamp: Date.now(),
+                                    },
+                                  ])
+                                } else {
+                                  void refreshHubState()
+                                }
+                              } finally {
+                                setRunningHubTool(null)
+                              }
+                            }}
+                            className="liquid-glass-pill px-1.5 py-0.5 rounded font-terminal text-[9px] text-sky-200 disabled:opacity-40"
+                          >
+                            {runningHubTool === `${app.appId}/${tool.toolId}` ? '...' : '调用'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {(hubState?.tasks || []).filter((t) => !['completed', 'failed', 'cancelled'].includes(t.status)).length > 0 && (
+              <div className="pt-2 border-t border-white/10 space-y-1.5">
+                <div className="font-terminal text-[10.5px] text-slate-300">进行中的任务</div>
+                {(hubState?.tasks || [])
+                  .filter((t) => !['completed', 'failed', 'cancelled'].includes(t.status))
+                  .slice(0, 6)
+                  .map((task) => (
+                    <div
+                      key={task.taskId}
+                      className="px-2.5 py-1.5 rounded-lg bg-white/[0.03] border border-white/10 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0 font-terminal text-[10.5px] text-slate-200 truncate">
+                        {task.appId} / {task.toolId}
+                        <span className="text-slate-500"> · {task.status}</span>
+                        {task.progress?.message && (
+                          <span className="text-slate-400"> · {task.progress.message}</span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await window.chatApi?.cancelHubTask(task.taskId)
+                          void refreshHubState()
+                        }}
+                        className="text-rose-300 hover:text-rose-200 font-terminal text-[10px] flex-shrink-0"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Settings Drawer (/settings · Appearance, Network & Secretary Workflows) */}
         {showSettings && (
           <div className="no-drag bg-[#07090f]/95 backdrop-blur-2xl border-b border-white/15 px-4 py-3.5 space-y-3.5 text-xs animate-in slide-in-from-top-2 duration-200 max-h-[380px] overflow-y-auto">
@@ -1774,9 +2019,21 @@ export default function ChatApp() {
                     ❯
                   </span>
                   <div className="flex-1 min-w-0 space-y-2">
-                    <div className="font-terminal text-[13px] text-sky-100 whitespace-pre-wrap break-words">
-                      {msg.content}
-                    </div>
+                    {msg.content.includes('[MUSE_PC_STATUS]') ? (
+                      <div className="flex items-center gap-2 font-terminal text-[11.5px] text-emerald-200">
+                        <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-400/40 flex items-center gap-1">
+                          <Cpu className="w-3 h-3 text-emerald-300" />
+                          <span>PC 状态数据已上报</span>
+                        </span>
+                        <span className="text-slate-400 truncate">
+                          {msg.content.split('\n').find(l => l.startsWith('Capture started:')) || ''}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="font-terminal text-[13px] text-sky-100 whitespace-pre-wrap break-words">
+                        {msg.content}
+                      </div>
+                    )}
                     {msg.attachments && msg.attachments.length > 0 && (
                       <div className="flex flex-wrap gap-2 pt-1">
                         {msg.attachments.map((att, aIdx) =>

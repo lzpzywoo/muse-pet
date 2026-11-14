@@ -170,6 +170,65 @@ export interface MuseCloudBrowserStatus {
   updatedAt: number
 }
 
+export interface MuseHubEvent {
+  eventId: string
+  sourceAppId: string
+  type: string
+  timestamp: number
+  payload: any
+}
+
+export interface MuseHubToolInfo {
+  toolId: string
+  name: string
+  description: string
+  category: 'query' | 'action' | 'vision' | 'system'
+  riskLevel: 'read-only' | 'write-safe' | 'write-dangerous'
+  trusted: boolean
+}
+
+export interface MuseHubAppInfo {
+  appId: string
+  name: string
+  version: string
+  description: string
+  online: boolean
+  activeTasks: number
+  lastHeartbeat: number
+  builtin: boolean
+  tools: MuseHubToolInfo[]
+}
+
+export interface MuseHubTaskInfo {
+  taskId: string
+  appId: string
+  toolId: string
+  parameters: Record<string, any>
+  status: 'pending' | 'awaiting_approval' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
+  priority: 'low' | 'normal' | 'high'
+  progress?: { percentage?: number; message?: string }
+  result?: any
+  error?: { code: string; message: string }
+  createdAt: number
+  updatedAt: number
+  completedAt?: number
+  origin: 'user' | 'luna' | 'system'
+}
+
+export interface MuseHubState {
+  port: number
+  apps: MuseHubAppInfo[]
+  tasks: MuseHubTaskInfo[]
+  toolSummary: string
+}
+
+export interface MuseLocalToolCall {
+  action: 'local_tool'
+  appId: string
+  toolId: string
+  parameters: Record<string, any>
+}
+
 export interface ChatApi {
   sendMessage: (content: string) => Promise<void>
   stopGeneration: () => void
@@ -215,6 +274,13 @@ export interface ChatApi {
   openCloudBrowser: (identity: CloudBrowserMessage) => Promise<OpenCloudBrowserResult>
   getCloudBrowserStatus: () => Promise<MuseCloudBrowserStatus>
   onCloudBrowserStatus: (callback: (status: MuseCloudBrowserStatus) => void) => () => void
+  // Muse Local Agent Hub APIs
+  getHubState: () => Promise<MuseHubState>
+  dispatchHubTool: (call: MuseLocalToolCall) => Promise<{ ok: boolean; taskId?: string; status?: string; error?: string }>
+  runHubTool: (appId: string, toolId: string, params?: Record<string, any>) => Promise<{ ok: boolean; taskId?: string; status?: string; result?: any; error?: string }>
+  setHubToolTrusted: (appId: string, toolId: string, trusted: boolean) => Promise<{ ok: boolean }>
+  cancelHubTask: (taskId: string) => Promise<{ ok: boolean }>
+  onHubEvent: (callback: (event: MuseHubEvent) => void) => () => void
 }
 
 declare global {
