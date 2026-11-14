@@ -604,7 +604,8 @@ export class LocalSecretary {
     if (!action) {
       throw new Error('未找到该待授权操作')
     }
-    if (action.status === 'executed') {
+    // Already settled (including hub gates settled without PowerShell) — do not re-exec.
+    if (action.status !== 'pending') {
       return action
     }
 
@@ -624,6 +625,9 @@ export class LocalSecretary {
     const action = this.pendingActions.get(id)
     if (!action) {
       throw new Error('未找到该待授权操作')
+    }
+    if (action.status !== 'pending') {
+      return action
     }
     const updated: PendingSecretaryAction = {
       ...action,

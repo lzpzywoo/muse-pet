@@ -58,7 +58,20 @@ export function registerIpcHandlers(
         chatWin.webContents.send('secretary:action-updated', pending)
       }
       try {
-        return await hub.waitForApproval(taskId)
+        const approved = await hub.waitForApproval(taskId)
+        // HTTP approve/reject (or any non-UI resolver) leaves the card pending;
+        // settle it here so a later Allow cannot fall through to PowerShell.
+        const stillOpen = localSecretary.getPendingAction(pending.id)
+        if (stillOpen?.status === 'pending') {
+          localSecretary.settlePendingAction(
+            pending.id,
+            approved ? 'approved' : 'denied',
+            approved
+              ? '✓ 已批准，正在通过 Local Agent Hub 调度该工具。'
+              : '用户已拒绝该 Local Agent Hub 工具调用。'
+          )
+        }
+        return approved
       } finally {
         hubApprovalByActionId.delete(pending.id)
       }
