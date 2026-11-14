@@ -116,7 +116,7 @@ flowchart LR
 
 ---
 
-Enable `/pc on` in Muse Pet on **one target computer only**, then send the exact user message `/pc status` in the same main Muse conversation from your phone or browser. Muse Pet must remain running, signed in, and connected. Reports include a task ID, device name, capture time, and a bounded hardware/process snapshot; they are sent as local data using your cloud composer. No scripts, files, clipboard, or screenshots are accessed by this bridge. `/pc on` and `/pc off` are local controls; cloud messages cannot enable it.
+Enable `/pc on` in Muse Pet on **one target computer only**, then send the exact user message `/pc status` in the same main Muse conversation from your phone or browser. Desktop replies explain the reason and next step in Chinese (not signed in, disabled, baseline not ready, or queued). Uncertain sends are never auto-retried. Muse Pet must remain running, signed in, and connected. Reports include a task ID, device name, capture time, and a bounded hardware/process snapshot; they are sent as local data using your cloud composer. No scripts, files, clipboard, or screenshots are accessed by this bridge. `/pc on` and `/pc off` are local controls; cloud messages cannot enable it.
 
 Startup, reconnect, loading, history gaps, and native console use establish a fresh baseline: old requests are skipped. Status work waits while chat is sending; close the native console and wait for synchronization before requesting again. Credential changes disable the bridge until you enable it again. Uncertain sends are retained in the local ledger and never automatically retried or resampled; send a new `/pc status` if needed. Phone-to-cloud end-to-end delivery has not yet been validated.
 

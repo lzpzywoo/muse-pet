@@ -88,18 +88,20 @@ export class PcStatusBridge {
     this.bind(this.io.account())
     if (content === '/pc off') {
       this.ledger.enabled = false; this.invalidate(); this.persist()
-      return 'PC status bridge disabled on this computer.'
+      return '已在这台电脑关闭 PC 状态。手机上的 /pc status 不会再采集。需要时在本机终端输入 /pc on。'
     }
-    if (!this.ledger.account) return 'Sign in to Muse before enabling PC status.'
+    if (!this.ledger.account) return '还没登录 Muse，无法开启 PC 状态。请先在桌面完成账号登录，再输入 /pc on。'
     if (content === '/pc on') {
       if (!this.ledger.enabled) { this.ledger.enabled = true; this.invalidate(); this.persist() }
-      return `PC status enabled on ${this.io.device}. You can now ask Luna about PC status from your phone or desktop.`
+      return `已在「${this.io.device}」开启 PC 状态。可在手机或本机同一主对话发送精确的 /pc status。云端消息不能替你打开此开关。`
     }
-    if (!this.ledger.enabled) return 'PC status is disabled. Use /pc on on this computer first.'
-    if (!this.previous.length || !this.io.available() || this.now() - this.lastObservation > 15000) return 'PC status is waiting for a healthy cloud history baseline. Try again shortly.'
+    if (!this.ledger.enabled) return '这台电脑的 PC 状态是关闭的。请先在本机终端输入 /pc on，再从手机或桌面发送 /pc status。'
+    if (!this.previous.length || !this.io.available() || this.now() - this.lastObservation > 15000) {
+      return '云端对话还没形成可用基线（刚启动、断线、正在加载或原生工作台占用）。请稍等同步完成后再发一次 /pc status。本次不会自动重试。'
+    }
     this.enqueue('local:' + randomUUID()); this.persist()
     void this.drain().catch(() => {})
-    return 'PC status queued. The tagged local data report will appear in Muse.'
+    return '已排队采集只读系统快照。若发送结果不确定，不会自动重发；需要时再发一次 /pc status。'
   }
   private invalidate() {
     this.generation++; this.previous = []; this.lastObservation = 0

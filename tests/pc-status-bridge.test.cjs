@@ -37,7 +37,7 @@ test('account changes disable and logout clears pending work', async () => {
 })
 test('local status has one pipeline, never sends raw command; cloud on/off ignored', async () => {
   const f = fixture(); f.enable(); await f.observe([msg('a')]);
-  assert.match(f.bridge.command('/pc status'), /queued/); await tick(); assert.equal(f.captures, 1)
+  assert.match(f.bridge.command('/pc status'), /已排队/); await tick(); assert.equal(f.captures, 1)
   await f.observe([msg('a'), msg('report', f.sends[0]), msg('off', '/pc off')]); assert.equal(f.captures, 1)
   assert.equal(f.bridge.ledger.tasks[0].state, 'sent'); assert.equal(f.bridge.ledger.enabled, true)
   f.bridge.command('/pc off'); assert.equal(f.bridge.ledger.enabled, false)
@@ -93,7 +93,7 @@ test('lost contiguous overlap cancels busy queued and delayed capture before rep
   bridge.command('/pc on')
   const observe = messages => bridge.observe({ account: 'a', conversation: 'root', ready: true, messages })
   await observe([msg('a')])
-  assert.match(bridge.command('/pc status'), /queued/)
+  assert.match(bridge.command('/pc status'), /已排队/)
   await tick(); assert.equal(captures, 1)
   // Discontinuity while capture is in flight must invalidate that work before the new baseline.
   await observe([msg('z'), msg('y')])
@@ -113,7 +113,7 @@ test('first empty ready snapshot without prior baseline does not cancel later ac
   await f.bridge.observe({ account: f.account, conversation: 'https://muse.ai/', ready: true, messages: [] })
   await tick(); assert.equal(f.bridge.ledger.tasks.length, 0)
   await f.observe([msg('a')])
-  assert.match(f.bridge.command('/pc status'), /queued/); await tick()
+  assert.match(f.bridge.command('/pc status'), /已排队/); await tick()
   assert.equal(f.captures, 1); assert.equal(f.sends.length, 1)
 })
 test('definitely-not-submitted busy restores same ready report; uncertain send never retries', async () => {
