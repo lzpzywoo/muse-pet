@@ -27,6 +27,8 @@ export function registerIpcHandlers(
 ) {
   const localSecretary = new LocalSecretary()
   const systemScreenApp = new SystemScreenApp()
+  /** Maps secretary approval-card ids → hub taskIds waiting on waitForApproval. */
+  const hubApprovalByActionId = new Map<string, string>()
   const hub: HubServer = new HubServer({
     stateFilePath: path.join(app.getPath('userData'), 'hub_state.json'),
     executeTask: async (taskId: string, appId: string, toolId: string, params: any) => {
@@ -34,18 +36,6 @@ export function registerIpcHandlers(
         if (appId === SYSTEM_SCREEN_APP_ID) {
           const result = await systemScreenApp.execute(toolId, params)
           hub.tasks.complete(taskId, result)
-          return
-        }
-        const conn = (hub as any).sockets?.get(appId) as any
-        if (conn && conn.isOpen) {
-          conn.send(
-            JSON.stringify({
-              type: 'task.dispatched',
-              taskId,
-              payload: { taskId, toolId, parameters: params },
-              timestamp: Date.now(),
-            })
-          )
           return
         }
         hub.tasks.fail(taskId, { code: 'APP_UNREACHABLE', message: `${appId} 未连接，无法执行任务` })
@@ -56,21 +46,22 @@ export function registerIpcHandlers(
     requestApproval: async (taskId: string, appId: string, toolId: string, params: any): Promise<boolean> => {
       const app = hub.registry.get(appId)
       const title = `${app?.manifest.name || appId} · ${toolId}`
-      const pending = localSecretary.createPendingAction('powershell', title, JSON.stringify(params, null, 2), `Muse Local Agent Hub 请求执行 ${appId}/${toolId}`)
+      const pending = localSecretary.createPendingAction(
+        'powershell',
+        title,
+        JSON.stringify(params, null, 2),
+        `Muse Local Agent Hub 请求执行 ${appId}/${toolId}`
+      )
+      hubApprovalByActionId.set(pending.id, taskId)
       const chatWin = windowManager.getChatWindow()
       if (chatWin && !chatWin.isDestroyed()) {
         chatWin.webContents.send('secretary:action-updated', pending)
       }
-      const approved: boolean = await hub.waitForApproval(taskId)
-      const resolved = localSecretary.getPendingAction(pending.id)
-      if (resolved && resolved.status === 'pending') {
-        if (approved) {
-          await localSecretary.approveAction(pending.id)
-        } else {
-          await localSecretary.denyAction(pending.id)
-        }
+      try {
+        return await hub.waitForApproval(taskId)
+      } finally {
+        hubApprovalByActionId.delete(pending.id)
       }
-      return approved
     },
   })
   hub.start().catch((err: any) => console.error('[Hub] start failed:', err))
@@ -826,10 +817,28 @@ ${err?.message || String(err)}`
 
   // Local Secretary Agent IPC handlers
   ipcMain.handle('secretary:approve-action', async (_event, actionId: string) => {
+    const hubTaskId = hubApprovalByActionId.get(actionId)
+    if (hubTaskId) {
+      hub.resolveApproval(hubTaskId, true)
+      return localSecretary.settlePendingAction(
+        actionId,
+        'approved',
+        '✓ 已批准，正在通过 Local Agent Hub 调度该工具。'
+      )
+    }
     return await localSecretary.approveAction(actionId)
   })
 
   ipcMain.handle('secretary:deny-action', (_event, actionId: string) => {
+    const hubTaskId = hubApprovalByActionId.get(actionId)
+    if (hubTaskId) {
+      hub.resolveApproval(hubTaskId, false)
+      return localSecretary.settlePendingAction(
+        actionId,
+        'denied',
+        '用户已拒绝该 Local Agent Hub 工具调用。'
+      )
+    }
     return localSecretary.denyAction(actionId)
   })
 

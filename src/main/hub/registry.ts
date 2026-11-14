@@ -155,6 +155,11 @@ export class HubRegistry {
     return this.trustedTools.has(`${appId}/${toolId}`)
   }
 
+  /** Keys persisted as `appId/toolId` for hub_state.json round-trips. */
+  public listTrustedKeys(): string[] {
+    return [...this.trustedTools]
+  }
+
   public findTool(appId: string, toolId: string): ToolDefinition | null {
     const app = this.apps.get(appId)
     if (!app) return null

@@ -103,7 +103,12 @@ export class TaskManager {
   public markDispatched(taskId: string): HubTask | null {
     const task = this.transition(taskId, 'running')
     if (task) {
-      this.emit('task.dispatched', task.appId, { taskId, toolId: task.toolId })
+      this.emit('task.dispatched', task.appId, {
+        appId: task.appId,
+        taskId: task.taskId,
+        toolId: task.toolId,
+        parameters: task.parameters,
+      })
     }
     return task
   }

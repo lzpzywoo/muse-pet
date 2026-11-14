@@ -636,6 +636,33 @@ export class LocalSecretary {
     return updated
   }
 
+  /**
+   * Settle a pending card without executing PowerShell — used for Hub tool
+   * approvals where Allow/Deny only gates dispatch, not a local command.
+   */
+  public settlePendingAction(
+    id: string,
+    status: 'approved' | 'denied',
+    output: string
+  ): PendingSecretaryAction {
+    const action = this.pendingActions.get(id)
+    if (!action) {
+      throw new Error('未找到该待授权操作')
+    }
+    if (action.status !== 'pending') {
+      return action
+    }
+    const updated: PendingSecretaryAction = {
+      ...action,
+      status,
+      output,
+      executedAt: Date.now(),
+    }
+    this.pendingActions.set(id, updated)
+    this.emitActionUpdated(updated)
+    return updated
+  }
+
   private executeCommandForAction(action: PendingSecretaryAction): Promise<PendingSecretaryAction> {
     return new Promise((resolve) => {
       execFile(

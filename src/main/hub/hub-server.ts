@@ -66,8 +66,8 @@ export class HubServer {
     this.tasks = new TaskManager({ now: opts.now })
     this.tasks.onAny((event) => {
       this.publish(event)
-      this.broadcastToApps(event)
     })
+    this.restoreTrustedTools()
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -95,15 +95,29 @@ export class HubServer {
           {
             version: 1,
             signingKey: this.auth.signingKey,
-            trusted: this.registry.list().flatMap((a) =>
-              a.autoApproveToolIds.map((t) => `${a.manifest.appId}/${t}`)
-            ),
+            trusted: this.registry.listTrustedKeys(),
           },
           null,
           2
         ),
         { mode: 0o600 }
       )
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  private restoreTrustedTools() {
+    try {
+      if (!fs.existsSync(this.opts.stateFilePath)) return
+      const parsed = JSON.parse(fs.readFileSync(this.opts.stateFilePath, 'utf8'))
+      if (!Array.isArray(parsed.trusted)) return
+      for (const key of parsed.trusted) {
+        if (typeof key !== 'string') continue
+        const idx = key.indexOf('/')
+        if (idx <= 0 || idx >= key.length - 1) continue
+        this.registry.trustTool(key.slice(0, idx), key.slice(idx + 1))
+      }
     } catch {
       /* non-fatal */
     }
@@ -291,6 +305,7 @@ export class HubServer {
           return
         }
         this.tasks.markDispatched(task.taskId)
+        this.deliverTask(task.taskId, appIdFromToken, body.toolId, body.parameters ?? {})
         this.json(res, 200, { ok: true, data: { taskId: task.taskId, status: task.status } })
         return
       }
@@ -343,9 +358,7 @@ export class HubServer {
           return
         }
         if (sub === 'approve' || sub === 'reject') {
-          const pending = this.approvals.get(taskId)
-          this.approvals.delete(taskId)
-          pending?.resolve(sub === 'approve')
+          this.resolveApproval(taskId, sub === 'approve')
           this.json(res, 200, { ok: true })
           return
         }
@@ -451,14 +464,24 @@ export class HubServer {
     }
   }
 
-  private broadcastToApps(event: HubEvent) {
-    if (!['task.dispatched', 'task.approval_required'].includes(event.type)) return
-    const text = JSON.stringify(event)
-    for (const [appId, conn] of this.sockets.entries()) {
-      if (event.payload?.appId && event.payload.appId !== appId) continue
-      if (event.type === 'task.approval_required' && event.payload?.appId !== appId) continue
-      conn.send(text)
-    }
+  /** Deliver one third-party task frame matching the documented WS contract. */
+  private sendTaskDispatched(
+    taskId: string,
+    appId: string,
+    toolId: string,
+    parameters: Record<string, any>
+  ): boolean {
+    const conn = this.sockets.get(appId)
+    if (!conn || !conn.isOpen) return false
+    conn.send(
+      JSON.stringify({
+        type: 'task.dispatched',
+        taskId,
+        payload: { taskId, toolId, parameters },
+        timestamp: Date.now(),
+      })
+    )
+    return true
   }
 
   private publish(event: HubEvent) {
@@ -494,14 +517,34 @@ export class HubServer {
       task.approvedBy = 'user'
     }
     this.tasks.markDispatched(task.taskId)
-    void this.opts.executeTask(task.taskId, input.appId, input.toolId, input.parameters).catch(() => {})
+    this.deliverTask(task.taskId, input.appId, input.toolId, input.parameters)
     return { taskId: task.taskId, status: task.status }
+  }
+
+  /** Prefer the live WS socket; fall back to the in-process executeTask hook (builtins). */
+  private deliverTask(
+    taskId: string,
+    appId: string,
+    toolId: string,
+    parameters: Record<string, any>
+  ) {
+    if (this.sendTaskDispatched(taskId, appId, toolId, parameters)) return
+    void this.opts.executeTask(taskId, appId, toolId, parameters).catch(() => {})
   }
 
   public waitForApproval(taskId: string): Promise<boolean> {
     return new Promise((resolve) => {
       this.approvals.set(taskId, { resolve })
     })
+  }
+
+  /** Unblock a waitForApproval waiter (UI Allow/Deny or HTTP approve/reject). */
+  public resolveApproval(taskId: string, approved: boolean): boolean {
+    const pending = this.approvals.get(taskId)
+    if (!pending) return false
+    this.approvals.delete(taskId)
+    pending.resolve(approved)
+    return true
   }
 
   public trustTool(appId: string, toolId: string) {

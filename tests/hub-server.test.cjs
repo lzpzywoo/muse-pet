@@ -111,11 +111,17 @@ test('HubServer: HTTP endpoints, app registration, task dispatch and WS event fl
     assert.equal(dispatchResult.status, 'running')
     assert.ok(dispatchResult.taskId)
 
-    // Verify task dispatched via WS
+    // Verify task dispatched via WS (documented contract: top-level taskId + payload.parameters)
     await new Promise(r => setTimeout(r, 100))
-    const taskMsg = wsMessages.find(m => m.type === 'task.dispatched')
-    assert.ok(taskMsg)
+    const taskMsgs = wsMessages.filter(m => m.type === 'task.dispatched')
+    assert.equal(taskMsgs.length, 1, 'exactly one task.dispatched frame')
+    const taskMsg = taskMsgs[0]
+    assert.equal(taskMsg.taskId, dispatchResult.taskId)
     assert.equal(taskMsg.payload?.taskId, dispatchResult.taskId)
+    assert.equal(taskMsg.payload?.toolId, 'add_download')
+    assert.deepEqual(taskMsg.payload?.parameters, { url: 'https://example.com/test.zip' })
+    // Connected apps are delivered over WS; the in-process hook is only for builtins/offline fallback.
+    assert.equal(taskDispatched, null)
 
     // 7. Client reports completion via WS
     ws.send(JSON.stringify({
@@ -130,8 +136,42 @@ test('HubServer: HTTP endpoints, app registration, task dispatch and WS event fl
     assert.equal(taskStatus.result?.savedTo, '/tmp/test.zip')
 
     ws.close()
-  } finally {
+
+    // 8. UI-style approval: waitForApproval unblocks only via resolveApproval
+    hub.trustTool('com.demo.downloader', 'add_download') // trusted for later persistence check
+    hub.untrustTool('com.demo.downloader', 'add_download')
+
+    let approvalResolved = false
+    const waiter = hub.waitForApproval('tsk_ui_approve_1').then((ok) => {
+      approvalResolved = true
+      return ok
+    })
+    await new Promise((r) => setTimeout(r, 30))
+    assert.equal(approvalResolved, false)
+    assert.equal(hub.resolveApproval('tsk_ui_approve_1', true), true)
+    assert.equal(await waiter, true)
+    assert.equal(hub.resolveApproval('tsk_ui_approve_1', true), false)
+
+    // Reject path
+    const rejectWaiter = hub.waitForApproval('tsk_ui_reject_1')
+    assert.equal(hub.resolveApproval('tsk_ui_reject_1', false), true)
+    assert.equal(await rejectWaiter, false)
+
+    // Persist trust then restore on a fresh HubServer
+    hub.trustTool('com.demo.downloader', 'add_download')
+    assert.equal(hub.registry.isTrusted('com.demo.downloader', 'add_download'), true)
     hub.stop()
+
+    const hub2 = new HubServer({
+      port: TEST_PORT + 1,
+      stateFilePath: tmpState,
+      executeTask: async () => {},
+      requestApproval: async () => true,
+    })
+    assert.equal(hub2.registry.isTrusted('com.demo.downloader', 'add_download'), true)
+    hub2.stop()
+  } finally {
+    try { hub.stop() } catch {}
     try { fs.unlinkSync(tmpState) } catch {}
   }
 })
