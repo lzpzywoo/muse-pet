@@ -13,6 +13,8 @@ export class HubRegistry {
   private secrets = new Map<string, string>()
   /** Tool IDs the user marked as trusted (skip approval cards). */
   private trustedTools = new Set<string>()
+  /** In-process builtins never go offline from heartbeat sweep. */
+  private builtinAppIds = new Set<string>()
 
   constructor(
     private opts: {
@@ -50,6 +52,20 @@ export class HubRegistry {
     this.secrets.set(appId, manifest.secret)
     this.opts.onRegistered?.(app)
     return app
+  }
+
+  /** Mark an already-registered app as an always-online builtin. */
+  public markBuiltin(appId: string) {
+    this.builtinAppIds.add(appId)
+    const app = this.apps.get(appId)
+    if (app) {
+      app.online = true
+      app.lastHeartbeat = this.now()
+    }
+  }
+
+  public isBuiltin(appId: string): boolean {
+    return this.builtinAppIds.has(appId)
   }
 
   private validateManifest(manifest: AppManifest): { ok: boolean; error?: string } {
@@ -103,8 +119,12 @@ export class HubRegistry {
   }
 
   public unregister(appId: string): boolean {
+    if (this.builtinAppIds.has(appId)) return false
     const existed = this.apps.delete(appId)
     this.secrets.delete(appId)
+    for (const key of [...this.trustedTools]) {
+      if (key.startsWith(`${appId}/`)) this.trustedTools.delete(key)
+    }
     return existed
   }
 
@@ -128,10 +148,15 @@ export class HubRegistry {
     const now = this.now()
     const newlyOffline: string[] = []
     for (const app of this.apps.values()) {
+      const appId = app.manifest.appId
+      if (this.builtinAppIds.has(appId)) {
+        app.online = true
+        continue
+      }
       if (app.online && now - app.lastHeartbeat > timeoutMs) {
         app.online = false
-        newlyOffline.push(app.manifest.appId)
-        this.opts.onOffline?.(app.manifest.appId)
+        newlyOffline.push(appId)
+        this.opts.onOffline?.(appId)
       }
     }
     return newlyOffline

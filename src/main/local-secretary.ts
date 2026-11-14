@@ -579,7 +579,8 @@ export class LocalSecretary {
     type: PendingSecretaryAction['type'],
     title: string,
     command: string,
-    description: string
+    description: string,
+    extra?: Pick<PendingSecretaryAction, 'hubAppId' | 'hubToolId'>
   ): PendingSecretaryAction {
     const id = `sec-${crypto.randomBytes(4).toString('hex')}`
     const action: PendingSecretaryAction = {
@@ -589,6 +590,8 @@ export class LocalSecretary {
       command,
       description,
       status: 'pending',
+      ...(extra?.hubAppId ? { hubAppId: extra.hubAppId } : {}),
+      ...(extra?.hubToolId ? { hubToolId: extra.hubToolId } : {}),
     }
     this.pendingActions.set(id, action)
     this.emitActionUpdated(action)

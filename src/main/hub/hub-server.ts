@@ -567,6 +567,35 @@ export class HubServer {
     this.persistState()
   }
 
+  /**
+   * Force-remove a third-party app from the in-memory registry (UI /admin path).
+   * Builtins must be rejected by the caller.
+   */
+  public removeApp(appId: string): boolean {
+    if (!this.registry.get(appId) || this.registry.isBuiltin(appId)) return false
+    this.tasks.cancelAppTasks(appId, 'removed from hub panel')
+    const conn = this.sockets.get(appId)
+    if (conn) {
+      try {
+        conn.close(1000, 'removed')
+      } catch {
+        /* ignore */
+      }
+      this.sockets.delete(appId)
+    }
+    this.auth.revokeApp(appId)
+    const ok = this.registry.unregister(appId)
+    this.persistState()
+    this.publish({
+      eventId: randomUUID(),
+      sourceAppId: 'hub',
+      type: 'app.offline',
+      timestamp: Date.now(),
+      payload: { appId, removed: true },
+    })
+    return ok
+  }
+
   /** Human-readable capability list injected into Luna's context. */
   public describeToolsForLuna(): string {
     const tools = this.registry.allTools()

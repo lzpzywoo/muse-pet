@@ -82,6 +82,30 @@ test('HubRegistry: validates manifest and tracks online/heartbeat lifecycle', ()
   assert.deepEqual(swept, ['com.test.downloader'])
   assert.equal(offlineApp, 'com.test.downloader')
   assert.equal(registry.listOnline().length, 0)
+
+  // Builtins stay online across heartbeat sweeps and cannot be unregistered
+  const builtin = registry.register({
+    appId: 'system.screen',
+    name: '系统屏幕视觉',
+    secret: 'muse-builtin-system-screen',
+    tools: [
+      {
+        toolId: 'capture',
+        name: '截取当前屏幕',
+        description: '截屏',
+        category: 'vision',
+        riskLevel: 'read-only',
+        inputSchema: { type: 'object' },
+      },
+    ],
+  })
+  registry.markBuiltin('system.screen')
+  assert.equal(registry.isBuiltin('system.screen'), true)
+  now += 200_000
+  assert.deepEqual(registry.sweepOffline(75_000), [])
+  assert.equal(builtin.online, true)
+  assert.equal(registry.unregister('system.screen'), false)
+  assert.ok(registry.get('system.screen'))
 })
 
 test('HubAuth: token issuance, verification, and risk level evaluation', () => {

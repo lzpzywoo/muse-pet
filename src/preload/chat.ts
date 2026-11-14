@@ -174,6 +174,9 @@ const chatApi: ChatApi = {
   cancelHubTask: (taskId) => {
     return ipcRenderer.invoke('hub:cancel-task', taskId)
   },
+  removeHubApp: (appId) => {
+    return ipcRenderer.invoke('hub:remove-app', appId)
+  },
   onHubEvent: (callback) => {
     const subscription = (_event: any, event: any) => callback(event)
     ipcRenderer.on('hub:event', subscription)

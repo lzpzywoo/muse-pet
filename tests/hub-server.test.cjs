@@ -170,6 +170,57 @@ test('HubServer: HTTP endpoints, app registration, task dispatch and WS event fl
     })
     assert.equal(hub2.registry.isTrusted('com.demo.downloader', 'add_download'), true)
     hub2.stop()
+
+    // 9. Force-remove third-party apps from the panel path
+    const hub3 = new HubServer({
+      port: TEST_PORT + 2,
+      stateFilePath: path.join(os.tmpdir(), `hub-test-remove-${Date.now()}.json`),
+      executeTask: async () => {},
+      requestApproval: async () => true,
+    })
+    await hub3.start()
+    try {
+      hub3.registry.register({
+        appId: 'com.temp.plugin',
+        name: 'Temp Plugin',
+        secret: 'temp-secret-123456',
+        tools: [
+          {
+            toolId: 'ping',
+            name: 'Ping',
+            description: 'ping',
+            category: 'query',
+            riskLevel: 'read-only',
+            inputSchema: { type: 'object' },
+          },
+        ],
+      })
+      hub3.trustTool('com.temp.plugin', 'ping')
+      assert.equal(hub3.removeApp('com.temp.plugin'), true)
+      assert.equal(hub3.registry.get('com.temp.plugin'), undefined)
+      assert.equal(hub3.registry.isTrusted('com.temp.plugin', 'ping'), false)
+
+      hub3.registry.register({
+        appId: 'system.screen',
+        name: '系统屏幕视觉',
+        secret: 'muse-builtin-system-screen',
+        tools: [
+          {
+            toolId: 'capture',
+            name: '截取当前屏幕',
+            description: '截屏',
+            category: 'vision',
+            riskLevel: 'read-only',
+            inputSchema: { type: 'object' },
+          },
+        ],
+      })
+      hub3.registry.markBuiltin('system.screen')
+      assert.equal(hub3.removeApp('system.screen'), false)
+      assert.ok(hub3.registry.get('system.screen'))
+    } finally {
+      hub3.stop()
+    }
   } finally {
     try { hub.stop() } catch {}
     try { fs.unlinkSync(tmpState) } catch {}

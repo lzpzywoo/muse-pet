@@ -44,6 +44,43 @@ import {
   Plug,
 } from 'lucide-react'
 
+function formatHubRelativeTime(ts: number): string {
+  if (!ts) return '未知'
+  const delta = Date.now() - ts
+  if (delta < 15_000) return '刚刚'
+  if (delta < 60_000) return `${Math.max(1, Math.floor(delta / 1000))} 秒前`
+  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前`
+  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`
+  return `${Math.floor(delta / 86_400_000)} 天前`
+}
+
+function formatHubTaskStatus(status: string): string {
+  switch (status) {
+    case 'pending':
+      return '排队中'
+    case 'awaiting_approval':
+      return '待批准'
+    case 'running':
+      return '运行中'
+    case 'paused':
+      return '已暂停'
+    case 'completed':
+      return '已完成'
+    case 'failed':
+      return '失败'
+    case 'cancelled':
+      return '已取消'
+    default:
+      return status
+  }
+}
+
+function formatHubTaskOrigin(origin: string): string {
+  if (origin === 'luna') return 'Luna'
+  if (origin === 'system') return '系统'
+  return '用户'
+}
+
 // Lightweight Markdown & Code Block Formatter in Liquid Glass Terminal style
 function MarkdownContent({
   content,
@@ -1588,7 +1625,9 @@ export default function ChatApp() {
             </div>
 
             {(!hubState?.apps || hubState.apps.length === 0) && (
-              <div className="text-[11px] text-slate-400">暂无已接入的软件。系统屏幕视觉应始终在线。</div>
+              <div className="text-[11px] text-slate-400">
+                暂无已接入的软件。内置「系统屏幕视觉」应始终在线；第三方应用接入后可在此查看、调用或移除。
+              </div>
             )}
 
             <div className="space-y-2">
@@ -1613,16 +1652,47 @@ export default function ChatApp() {
                         )}
                       </div>
                       <div className="font-terminal text-[10px] text-slate-500 truncate">{app.appId}</div>
+                      <div className="font-terminal text-[9.5px] text-slate-500 mt-0.5">
+                        {app.online
+                          ? `心跳 ${formatHubRelativeTime(app.lastHeartbeat)}`
+                          : `离线 · 上次心跳 ${formatHubRelativeTime(app.lastHeartbeat)}`}
+                      </div>
                     </div>
-                    <span
-                      className={`px-2 py-0.5 rounded font-terminal text-[10px] flex-shrink-0 ${
-                        app.online
-                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                          : 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
-                      }`}
-                    >
-                      {app.online ? '在线' : '离线'}
-                    </span>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <span
+                        className={`px-2 py-0.5 rounded font-terminal text-[10px] ${
+                          app.online
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            : 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
+                        }`}
+                      >
+                        {app.online ? '在线' : '离线'}
+                      </span>
+                      {!app.builtin && (
+                        <button
+                          type="button"
+                          title="从 Hub 移除该应用"
+                          onClick={async () => {
+                            const res = await window.chatApi?.removeHubApp(app.appId)
+                            if (!res?.ok) {
+                              setMessages((prev) => [
+                                ...prev,
+                                {
+                                  id: String(Date.now()),
+                                  role: 'assistant',
+                                  content: `⚠️ 移除 ${app.appId} 失败：${res?.error || '未知错误'}`,
+                                  timestamp: Date.now(),
+                                },
+                              ])
+                            }
+                            void refreshHubState()
+                          }}
+                          className="px-1.5 py-0.5 rounded font-terminal text-[9px] border border-rose-400/35 text-rose-300 hover:bg-rose-500/15"
+                        >
+                          移除
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="text-[10.5px] text-slate-400">{app.description}</div>
                   <div className="space-y-1">
@@ -1716,7 +1786,10 @@ export default function ChatApp() {
                     >
                       <div className="min-w-0 font-terminal text-[10.5px] text-slate-200 truncate">
                         {task.appId} / {task.toolId}
-                        <span className="text-slate-500"> · {task.status}</span>
+                        <span className="text-slate-500">
+                          {' '}· {formatHubTaskStatus(task.status)}
+                          {' '}· {formatHubTaskOrigin(task.origin)}
+                        </span>
                         {task.progress?.message && (
                           <span className="text-slate-400"> · {task.progress.message}</span>
                         )}
@@ -2229,19 +2302,48 @@ export default function ChatApp() {
                     </div>
                   )}
 
-                  {/* Terminal Authorization Card for Local Secretary Write / PowerShell Actions */}
+                  {/* Terminal Authorization Card — PowerShell / Hub tool gates */}
                   {msg.pendingAction && (
-                    <div className="mt-2.5 rounded-xl border border-amber-400/35 bg-slate-950/85 overflow-hidden shadow-lg">
-                      <div className="flex items-center justify-between px-3 py-2 bg-amber-500/15 border-b border-amber-400/25">
-                        <div className="flex items-center gap-2 font-terminal text-xs text-amber-200">
-                          <ShieldAlert className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                    <div
+                      className={`mt-2.5 rounded-xl border bg-slate-950/85 overflow-hidden shadow-lg ${
+                        msg.pendingAction.type === 'hub_tool'
+                          ? 'border-fuchsia-400/35'
+                          : 'border-amber-400/35'
+                      }`}
+                    >
+                      <div
+                        className={`flex items-center justify-between px-3 py-2 border-b ${
+                          msg.pendingAction.type === 'hub_tool'
+                            ? 'bg-fuchsia-500/15 border-fuchsia-400/25'
+                            : 'bg-amber-500/15 border-amber-400/25'
+                        }`}
+                      >
+                        <div
+                          className={`flex items-center gap-2 font-terminal text-xs ${
+                            msg.pendingAction.type === 'hub_tool' ? 'text-fuchsia-200' : 'text-amber-200'
+                          }`}
+                        >
+                          {msg.pendingAction.type === 'hub_tool' ? (
+                            <Plug className="w-3.5 h-3.5 text-fuchsia-400 flex-shrink-0" />
+                          ) : (
+                            <ShieldAlert className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                          )}
                           <span className="font-semibold">{msg.pendingAction.title}</span>
+                          {msg.pendingAction.type === 'hub_tool' && (
+                            <span className="px-1.5 py-0.5 rounded bg-fuchsia-500/20 border border-fuchsia-400/35 text-fuchsia-200 text-[9.5px]">
+                              Local Agent Hub
+                            </span>
+                          )}
                         </div>
                         <span
                           className={`px-2 py-0.5 rounded text-[10px] font-terminal ${
                             msg.pendingAction.status === 'pending'
-                              ? 'bg-amber-500/25 text-amber-200 border border-amber-400/40'
-                              : msg.pendingAction.status === 'executed'
+                              ? msg.pendingAction.type === 'hub_tool'
+                                ? 'bg-fuchsia-500/25 text-fuchsia-200 border border-fuchsia-400/40'
+                                : 'bg-amber-500/25 text-amber-200 border border-amber-400/40'
+                              : msg.pendingAction.status === 'executed' ||
+                                  (msg.pendingAction.type === 'hub_tool' &&
+                                    msg.pendingAction.status === 'approved')
                               ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-400/40'
                               : msg.pendingAction.status === 'denied'
                               ? 'bg-slate-700/60 text-slate-300'
@@ -2250,6 +2352,9 @@ export default function ChatApp() {
                         >
                           {msg.pendingAction.status === 'pending'
                             ? '待授权确认'
+                            : msg.pendingAction.type === 'hub_tool' &&
+                                msg.pendingAction.status === 'approved'
+                            ? '已批准调度'
                             : msg.pendingAction.status === 'approved'
                             ? '正在执行...'
                             : msg.pendingAction.status === 'executed'
@@ -2264,8 +2369,27 @@ export default function ChatApp() {
                         <div className="text-[11px] text-slate-300/80 font-terminal">
                           {msg.pendingAction.description}
                         </div>
-                        <pre className="p-2.5 rounded-lg bg-black/70 border border-white/10 font-terminal text-xs text-amber-100 overflow-x-auto whitespace-pre-wrap">
-                          <code>{msg.pendingAction.command}</code>
+                        {msg.pendingAction.type === 'hub_tool' &&
+                          (msg.pendingAction.hubAppId || msg.pendingAction.hubToolId) && (
+                            <div className="font-terminal text-[10px] text-fuchsia-200/80">
+                              {msg.pendingAction.hubAppId}
+                              {msg.pendingAction.hubToolId
+                                ? ` / ${msg.pendingAction.hubToolId}`
+                                : ''}
+                            </div>
+                          )}
+                        <pre
+                          className={`p-2.5 rounded-lg bg-black/70 border border-white/10 font-terminal text-xs overflow-x-auto whitespace-pre-wrap ${
+                            msg.pendingAction.type === 'hub_tool'
+                              ? 'text-fuchsia-100'
+                              : 'text-amber-100'
+                          }`}
+                        >
+                          <code>
+                            {msg.pendingAction.type === 'hub_tool'
+                              ? `参数:\n${msg.pendingAction.command}`
+                              : msg.pendingAction.command}
+                          </code>
                         </pre>
 
                         {msg.pendingAction.status === 'pending' && (
@@ -2276,7 +2400,11 @@ export default function ChatApp() {
                               className="px-3 py-1.5 rounded-lg bg-emerald-500/25 hover:bg-emerald-500/40 border border-emerald-400/50 text-emerald-100 font-terminal text-xs flex items-center gap-1.5 transition-all shadow-sm"
                             >
                               <Check className="w-3.5 h-3.5 text-emerald-300" />
-                              <span>批准执行 (Allow)</span>
+                              <span>
+                                {msg.pendingAction.type === 'hub_tool'
+                                  ? '批准调度 (Allow)'
+                                  : '批准执行 (Allow)'}
+                              </span>
                             </button>
                             <button
                               type="button"
@@ -2292,8 +2420,13 @@ export default function ChatApp() {
                         {msg.pendingAction.output && (
                           <div className="pt-1.5 space-y-1.5">
                             <div className="flex items-center justify-between text-[10.5px] font-terminal text-slate-400">
-                              <span>终端执行结果 (stdout/stderr):</span>
-                              {msg.pendingAction.status === 'executed' && (
+                              <span>
+                                {msg.pendingAction.type === 'hub_tool'
+                                  ? 'Hub 调度结果:'
+                                  : '终端执行结果 (stdout/stderr):'}
+                              </span>
+                              {msg.pendingAction.status === 'executed' &&
+                                msg.pendingAction.type !== 'hub_tool' && (
                                 <button
                                   type="button"
                                   onClick={() =>

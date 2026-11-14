@@ -47,10 +47,11 @@ export function registerIpcHandlers(
       const app = hub.registry.get(appId)
       const title = `${app?.manifest.name || appId} · ${toolId}`
       const pending = localSecretary.createPendingAction(
-        'powershell',
+        'hub_tool',
         title,
-        JSON.stringify(params, null, 2),
-        `Muse Local Agent Hub 请求执行 ${appId}/${toolId}`
+        JSON.stringify(params ?? {}, null, 2),
+        `本地软件「${app?.manifest.name || appId}」请求执行工具 ${toolId}。批准后由 Local Agent Hub 调度，不会运行 PowerShell。`,
+        { hubAppId: appId, hubToolId: toolId }
       )
       hubApprovalByActionId.set(pending.id, taskId)
       const chatWin = windowManager.getChatWindow()
@@ -79,6 +80,7 @@ export function registerIpcHandlers(
   })
   hub.start().catch((err: any) => console.error('[Hub] start failed:', err))
   hub.registry.register(systemScreenApp.manifest)
+  hub.registry.markBuiltin(SYSTEM_SCREEN_APP_ID)
 
   hub.bus.subscribe('*', (event: HubEvent) => {
     const chatWin = windowManager.getChatWindow()
@@ -1048,7 +1050,7 @@ ${err?.message || String(err)}`
         online: a.online,
         activeTasks: a.activeTasks,
         lastHeartbeat: a.lastHeartbeat,
-        builtin: a.manifest.appId === SYSTEM_SCREEN_APP_ID,
+        builtin: hub.registry.isBuiltin(a.manifest.appId) || a.manifest.appId === SYSTEM_SCREEN_APP_ID,
         tools: a.manifest.tools.map((t: any) => ({
           toolId: t.toolId,
           name: t.name,
@@ -1099,6 +1101,21 @@ ${err?.message || String(err)}`
   ipcMain.handle('hub:cancel-task', async (_event, taskId: string) => {
     const task = hub.tasks.cancel(taskId, 'cancelled from terminal')
     return { ok: !!task }
+  })
+
+  ipcMain.handle('hub:remove-app', async (_event, appId: string) => {
+    if (!appId || typeof appId !== 'string') {
+      return { ok: false, error: 'invalid appId' }
+    }
+    if (appId === SYSTEM_SCREEN_APP_ID) {
+      return { ok: false, error: '内置应用不可移除' }
+    }
+    const existed = hub.registry.get(appId)
+    if (!existed) {
+      return { ok: false, error: '应用未注册' }
+    }
+    hub.removeApp(appId)
+    return { ok: true }
   })
 
   // App quit

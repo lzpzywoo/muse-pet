@@ -19,13 +19,17 @@ export interface ChatAttachment {
 
 export interface PendingSecretaryAction {
   id: string
-  type: 'powershell' | 'file_write'
+  /** hub_tool = Local Agent Hub write gate; never executes PowerShell. */
+  type: 'powershell' | 'file_write' | 'hub_tool'
   title: string
   command: string
   description: string
   status: 'pending' | 'approved' | 'denied' | 'executed' | 'error'
   output?: string
   executedAt?: number
+  /** Present when type === 'hub_tool'. */
+  hubAppId?: string
+  hubToolId?: string
 }
 
 export interface MusePlugin {
@@ -280,6 +284,7 @@ export interface ChatApi {
   runHubTool: (appId: string, toolId: string, params?: Record<string, any>) => Promise<{ ok: boolean; taskId?: string; status?: string; result?: any; error?: string }>
   setHubToolTrusted: (appId: string, toolId: string, trusted: boolean) => Promise<{ ok: boolean }>
   cancelHubTask: (taskId: string) => Promise<{ ok: boolean }>
+  removeHubApp: (appId: string) => Promise<{ ok: boolean; error?: string }>
   onHubEvent: (callback: (event: MuseHubEvent) => void) => () => void
 }
 
