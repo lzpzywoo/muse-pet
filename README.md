@@ -95,6 +95,8 @@ flowchart LR
 | `/read <path>` | Secretary | Read a local text/code file and send context to Luna |
 | `/clip [question]` | Secretary | Read system clipboard text and analyze/translate/explain it |
 | `/sys` | Secretary | Inspect real-time OS telemetry (CPU, memory, disks, battery, top processes) |
+| `/pc on` / `/pc off` | PC Bridge | Locally enable or disable read-only status replies on this computer |
+| `/pc status` | PC Bridge | Request a tagged local status report from Muse mobile/web or this terminal |
 | `/ps <script>` | Secretary | Create an inline `[Allow / Deny]` approval card to run PowerShell |
 | `/theme` / `/solid` / `/glass` | Appearance | Switch between Obsidian (`100%`), Carbon (`92%`), and Crystal (`72%`) |
 | `/sync` | Cloud | Force-sync cloud chat history, rich media, and avatar assets from `muse.ai` |
@@ -103,6 +105,10 @@ flowchart LR
 | `/clear` / `/exit` | System | Clear terminal screen or hide terminal window (`Esc`) |
 
 ---
+
+Enable `/pc on` in Muse Pet on **one target computer only**, then send the exact user message `/pc status` in the same main Muse conversation from your phone or browser. Muse Pet must remain running, signed in, and connected. Reports include a task ID, device name, capture time, and a bounded hardware/process snapshot; they are sent as local data using your cloud composer. No scripts, files, clipboard, or screenshots are accessed by this bridge. `/pc on` and `/pc off` are local controls; cloud messages cannot enable it.
+
+Startup, reconnect, loading, history gaps, and native console use establish a fresh baseline: old requests are skipped. Status work waits while chat is sending; close the native console and wait for synchronization before requesting again. Credential changes disable the bridge until you enable it again. Uncertain sends are retained in the local ledger and never automatically retried or resampled; send a new `/pc status` if needed. Phone-to-cloud end-to-end delivery has not yet been validated.
 
 ## 🚀 Getting Started
 

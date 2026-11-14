@@ -19,6 +19,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { pathToFileURL } from 'url'
 import { SessionStore } from './session-store'
+import { pcAccount, PcReportNotSubmitted, type PcObservation } from './pc-status-bridge'
 import type {
   AvatarAssets,
   ChatAttachment,
@@ -168,6 +169,91 @@ export class MuseClient {
     }
   }
 
+  private pcObserver?: (observation: PcObservation) => Promise<void>
+  private pcPolling = false
+  public onPcObservation(cb: (observation: PcObservation) => Promise<void>) { this.pcObserver = cb }
+  public pcAvailable(): boolean {
+    return !!this.museWindow && !this.museWindow.isDestroyed() && !this.museWindow.isVisible() &&
+      !this.museWindow.webContents.isLoading() && !this.isSendingChat && !this.isFetchingCloudData
+  }
+  private async pollPcObservation() {
+    if (!this.pcObserver || this.pcPolling) return
+    this.pcPolling = true
+    const account = pcAccount(this.sessionStore.getCookies())
+    try {
+      const win = this.museWindow
+      // Brief Cloud Hub navigation pauses observation and preserves already accepted work.
+      // A long pause still resets continuity through the bridge's observation-gap gate.
+      if (this.isFetchingCloudData) return
+      if (!account || !win || win.isDestroyed() || win.webContents.isLoading() || win.isVisible()) {
+        await this.pcObserver({ account, conversation: '', ready: false, messages: [] }); return
+      }
+      const observation = await win.webContents.executeJavaScript(`(() => {
+        if (!window.__pcObservationEpoch) {
+          window.__pcObservationEpoch = crypto.randomUUID()
+          window.addEventListener('offline', () => { window.__pcObservationEpoch = crypto.randomUUID() })
+          window.addEventListener('online', () => { window.__pcObservationEpoch = crypto.randomUUID() })
+        }
+        // Real muse.ai mounts several data-hatch-chat-column shells; only the role=log history carries motion + messages.
+        const col = document.querySelector('[data-hatch-chat-column="true"][role="log"], [data-hatch-chat-column="true"][data-initial-history-motion], [role="log"][data-initial-history-motion]')
+        const ta = document.querySelector('textarea')
+        let bottom = true
+        for (let el = col; el; el = el.parentElement) {
+          if (el.scrollHeight > el.clientHeight + 20 && getComputedStyle(el).overflowY !== 'visible') {
+            if (el.scrollHeight - el.scrollTop - el.clientHeight > 40) bottom = false
+          }
+        }
+        // Scope connection text to page chrome / announcers; ordinary chat words like "offline" must not unready the bridge.
+        const connectionSignals = Array.from(document.querySelectorAll(
+          '[data-hatch-connection-status-announcer], [data-hatch-composer-support-access-status], [data-hatch-composer-lock-status], [role="status"], [role="alert"], [aria-live]'
+        )).filter(el => !el.closest('[data-message-item="true"]') && el.getAttribute('role') !== 'log')
+          .map(el => el.innerText || '').join('\n')
+        const ready = location.origin === 'https://muse.ai' && location.pathname === '/' && !location.search &&
+          navigator.onLine && document.readyState === 'complete' && !!ta && !!col && bottom &&
+          col.getAttribute('data-initial-history-motion') === 'complete' &&
+          !document.querySelector('[aria-busy="true"], [role="progressbar"]') &&
+          !/reconnecting|disconnected|offline|connection lost|重新连接|连接断开|网络异常/i.test(connectionSignals)
+        const messages = Array.from(document.querySelectorAll('[data-message-item="true"]')).map(el => ({
+          id: el.getAttribute('data-message-id') || '', role: el.getAttribute('data-message-role') || '',
+          content: (el.innerText || '').trim()
+        }))
+        return { conversation: location.origin + location.pathname, epoch: window.__pcObservationEpoch, ready, messages }
+      })()`)
+      if (account !== pcAccount(this.sessionStore.getCookies())) return
+      await this.pcObserver({ ...observation, account })
+    } catch {
+      await this.pcObserver({ account, conversation: '', ready: false, messages: [] })
+    } finally { this.pcPolling = false }
+  }
+  public async sendPcReport(report: string, conversation: string, account: string) {
+    if (!this.pcAvailable() || account !== pcAccount(this.sessionStore.getCookies()) || this.museWindow?.webContents.getURL() !== conversation) {
+      throw new PcReportNotSubmitted('PC bridge unavailable')
+    }
+    this.isSendingChat = true
+    try {
+      let submitError: string | null = null
+      await this.sendViaMuseWindow(
+        report,
+        this.sessionStore.getCookies(),
+        () => {},
+        () => {},
+        (err) => { submitError = err },
+        { pcBridge: true, pcAccount: account }
+      )
+      // Preflight/composer busy before click — definite non-submit for bridge retry.
+      if (submitError === 'pc_not_submitted') throw new PcReportNotSubmitted('PC composer busy')
+      // Anything else after an attempted click (or unknown) stays uncertain: never blind-retry.
+      if (submitError) throw new Error(submitError)
+    } catch (err) {
+      if (err instanceof PcReportNotSubmitted) throw err
+      // Failures before inject/click never submitted the report.
+      if (err instanceof Error && /PC session changed|等待 Muse|登录状态|PC bridge unavailable/.test(err.message)) {
+        throw new PcReportNotSubmitted(err.message)
+      }
+      throw err
+    } finally { this.isSendingChat = false }
+  }
+
   public isChatTurnActive(): boolean {
     return this.isSendingChat
   }
@@ -193,6 +279,7 @@ export class MuseClient {
   public startCloudMessageWatcher() {
     if (this.cloudWatchTimer) return
     this.cloudWatchTimer = setInterval(() => {
+      void this.pollPcObservation().catch(() => console.warn('PC status observation unavailable'))
       if (!this.sessionStore.getProfile().isLoggedIn) {
         return
       }
@@ -1159,7 +1246,7 @@ export class MuseClient {
   public async readCloudFile(fileName: string): Promise<{ fileName: string; content: string }> {
     const cleanName = fileName.replace(/^\/+/, '').trim()
     const cookies = this.sessionStore.getCookies()
-    if (!cookies || this.isSendingChat) {
+    if (!cookies || this.isSendingChat || this.isFetchingCloudData) {
       return {
         fileName: cleanName,
         content: '当前正在对话或尚未登录 Meta Muse，请稍后再试。',
@@ -1353,6 +1440,7 @@ export class MuseClient {
   }
 
   public async openCloudConsole(target: MuseCloudConsoleTarget = 'main'): Promise<boolean> {
+    if (this.isSendingChat || this.isFetchingCloudData) return false
     const cookies = this.sessionStore.getCookies()
     if (!cookies) return false
     try {
@@ -1435,11 +1523,14 @@ export class MuseClient {
     onEnd: (fullText: string) => void,
     onError: (err: string) => void,
     options?: {
+      pcBridge?: boolean
+      pcAccount?: string
       imageBase64?: string
       imageMimeType?: string
       imageFileName?: string
     }
   ) {
+    if (this.isSendingChat || this.isFetchingCloudData) { onError('Muse is busy; try again shortly.'); return }
     this.aborted = false
     this.isSendingChat = true
     const cookies = this.sessionStore.getCookies()
@@ -1479,12 +1570,14 @@ export class MuseClient {
     onEnd: (fullText: string) => void,
     onError: (err: string) => void,
     options?: {
+      pcBridge?: boolean
+      pcAccount?: string
       imageBase64?: string
       imageMimeType?: string
       imageFileName?: string
     }
   ) {
-    const win = await this.ensureMuseWindow(cookies)
+    const win = options?.pcBridge ? this.museWindow! : await this.ensureMuseWindow(cookies)
     if (!this.getCachedAvatarAssets()) {
       this.syncAvatarAssets().catch(() => {})
     }
@@ -1492,6 +1585,7 @@ export class MuseClient {
     // Wait for composer textarea AND initial chat history to finish mounting
     const composerReady = await win.webContents.executeJavaScript(`
       (async function() {
+        if (${Boolean(options?.pcBridge)} && (location.pathname !== '/' || !navigator.onLine)) return { ok: false }
         if (location.pathname !== '/') {
           history.pushState({}, '', '/')
           window.dispatchEvent(new PopStateEvent('popstate'))
@@ -1500,7 +1594,7 @@ export class MuseClient {
         const start = Date.now()
         while (Date.now() - start < 20000) {
           const ta = document.querySelector('textarea')
-          const col = document.querySelector('[data-hatch-chat-column="true"], [role="log"]')
+          const col = document.querySelector('[data-hatch-chat-column="true"][role="log"], [data-hatch-chat-column="true"][data-initial-history-motion], [role="log"][data-initial-history-motion]')
           const motionDone = !col || col.getAttribute('data-initial-history-motion') === 'complete'
           const hasMsgs = document.querySelectorAll('[data-message-item="true"]').length > 0
           if (ta && (hasMsgs || (col && motionDone))) {
@@ -1520,13 +1614,16 @@ export class MuseClient {
     `)
 
     if (!composerReady || !composerReady.ok) {
-      throw new Error(
-        composerReady?.reason === 'not_logged_in'
-          ? '登录状态已失效，请重新登录 Meta Muse'
-          : '等待 Muse 页面加载超时'
-      )
+      const reason = composerReady?.reason === 'not_logged_in'
+        ? '登录状态已失效，请重新登录 Meta Muse'
+        : '等待 Muse 页面加载超时'
+      if (options?.pcBridge) throw new PcReportNotSubmitted(reason)
+      throw new Error(reason)
     }
 
+    if (options?.pcBridge && (options.pcAccount !== pcAccount(this.sessionStore.getCookies()) || win.isVisible() || win.webContents.getURL() !== 'https://muse.ai/')) {
+      throw new PcReportNotSubmitted('PC session changed')
+    }
     const runId = ++this.activeRunId
     // Inject script to submit message via React composer and stream back assistant reply
     const injectAndStream = `
@@ -1540,14 +1637,32 @@ export class MuseClient {
         async function runChat() {
           try {
             const textArea = document.querySelector('textarea')
+            const pcBridge = ${Boolean(options?.pcBridge)}
+            const pcBusy = () => !!(textArea && (textArea.value || !navigator.onLine || location.href !== 'https://muse.ai/' ||
+              document.querySelector('[data-hatch-composer-action="stop"], [data-pel-click="chat_stop_generation"]')))
+            const clearComposer = (ta, setter, key) => {
+              if (setter) setter.call(ta, '')
+              else ta.value = ''
+              if (key && ta[key] && typeof ta[key].onChange === 'function') {
+                ta[key].onChange({ target: ta, currentTarget: ta })
+              } else {
+                ta.dispatchEvent(new Event('input', { bubbles: true }))
+              }
+            }
             if (!textArea) {
               if (window.__museActiveRunId === myRunId) {
-                window.__museStreamError = '未找到输入框'
+                window.__museStreamError = pcBridge ? 'pc_not_submitted' : '未找到输入框'
                 window.__museStreamDone = true
               }
               return
             }
 
+            // Never overwrite an existing draft or fight a stop/offline composer.
+            if (pcBridge && pcBusy()) {
+              window.__museStreamError = 'pc_not_submitted'
+              window.__museStreamDone = true
+              return
+            }
             // Record existing message IDs and their current roles before sending
             const existingAll = Array.from(document.querySelectorAll('[data-message-item="true"]'))
             const beforeIds = new Set(existingAll.map(el => el.getAttribute('data-message-id')))
@@ -1622,11 +1737,21 @@ export class MuseClient {
             await new Promise(r => setTimeout(r, 150))
             if (window.__museActiveRunId !== myRunId) return
 
+            // Re-check after onChange: stop/offline/navigation means we have not clicked yet.
+            if (pcBridge && (!navigator.onLine || location.href !== 'https://muse.ai/' ||
+              document.querySelector('[data-hatch-composer-action="stop"], [data-pel-click="chat_stop_generation"]'))) {
+              clearComposer(textArea, nativeSetter, propsKey)
+              window.__museStreamError = 'pc_not_submitted'
+              window.__museStreamDone = true
+              return
+            }
+
             const sendBtn =
               document.querySelector('[data-pel-click="chat_send_message"]') ||
               document.querySelector('[data-hatch-composer-action="send"] button')
 
             if (sendBtn && !sendBtn.disabled) {
+              // Click attempted: any later failure is uncertain and must not blind-retry.
               sendBtn.click()
             } else if (propsKey && textArea[propsKey] && typeof textArea[propsKey].onKeyDown === 'function') {
               textArea[propsKey].onKeyDown({
@@ -1645,7 +1770,8 @@ export class MuseClient {
               })
             } else {
               if (window.__museActiveRunId === myRunId) {
-                window.__museStreamError = '无法触发发送按钮'
+                if (pcBridge) clearComposer(textArea, nativeSetter, propsKey)
+                window.__museStreamError = pcBridge ? 'pc_not_submitted' : '无法触发发送按钮'
                 window.__museStreamDone = true
               }
               return

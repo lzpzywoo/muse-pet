@@ -6,6 +6,8 @@ import { MuseClient, extractMuseSessionCookies, MUSE_PARTITION } from './muse-cl
 import { SessionStore } from './session-store'
 import { ProxyManager } from './proxy-manager'
 import { LocalSecretary } from './local-secretary'
+import { hostname } from 'node:os'
+import { PcStatusBridge, pcAccount } from './pc-status-bridge'
 import type {
   ChatMessage,
   MusePlugin,
@@ -21,6 +23,25 @@ export function registerIpcHandlers(
   proxyManager: ProxyManager
 ) {
   const localSecretary = new LocalSecretary()
+  const pcLedgerPath = path.join(app.getPath('userData'), 'pc_status_ledger.json')
+  const pcBridge = new PcStatusBridge({
+    load: () => {
+      try {
+        const state = JSON.parse(fs.readFileSync(pcLedgerPath, 'utf8'))
+        if (state.version === 1 && typeof state.account === 'string' && typeof state.enabled === 'boolean' && Array.isArray(state.tasks) && state.tasks.every((t: any) => t && typeof t.id === 'string' && typeof t.messageId === 'string' && typeof t.conversation === 'string' && ['queued', 'capturing', 'ready', 'sending', 'sent', 'cancelled'].includes(t.state) && (t.report === undefined || typeof t.report === 'string')) && Array.isArray(state.seen) && state.seen.every((id: unknown) => typeof id === 'string')) return state
+      } catch { /* missing/corrupt state disables the bridge */ }
+      return null
+    },
+    save: state => {
+      fs.writeFileSync(pcLedgerPath + '.tmp', JSON.stringify(state), { mode: 0o600 })
+      fs.renameSync(pcLedgerPath + '.tmp', pcLedgerPath)
+    },
+    account: () => pcAccount(sessionStore.getCookies()), device: hostname(),
+    available: () => museClient.pcAvailable(),
+    snapshot: () => localSecretary.getSystemSnapshot(),
+    send: (report, conversation, account) => museClient.sendPcReport(report, conversation, account),
+  })
+  museClient.onPcObservation(o => pcBridge.observe(o))
   const historyFilePath = path.join(app.getPath('userData'), 'chat_history.json')
   let messageHistory: ChatMessage[] = []
   let unreadCount = 0
@@ -468,6 +489,14 @@ export function registerIpcHandlers(
   ipcMain.handle('chat:send-message', async (_event, content: string) => {
     const chatWin = windowManager.getChatWindow()
     const bubbleId = String(Date.now())
+    const pcReply = pcBridge.command(content)
+    if (pcReply !== null) {
+      // Local commands never enter the cloud composer or secretary prompt enrichment.
+      messageHistory.push({ id: bubbleId + '-pc', role: 'assistant', content: pcReply, timestamp: Date.now() })
+      savePersistedHistory()
+      chatWin?.webContents.send('chat:stream-end', pcReply)
+      return
+    }
 
     // Run LocalSecretary pre-flight inspection or attachment preparation
     let enriched: Awaited<ReturnType<typeof enrichWithLocalSecretary>>
@@ -711,6 +740,7 @@ export function registerIpcHandlers(
   })
 
   ipcMain.handle('auth:logout', async () => {
+    pcBridge.bind('')
     sessionStore.clear()
     museClient.clearCloudBrowserStatus()
     try {
