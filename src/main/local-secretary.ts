@@ -551,6 +551,9 @@ export class LocalSecretary {
     if (!action) {
       throw new Error('未找到该待授权操作')
     }
+    if (action.type === 'hub_tool') {
+      throw new Error('Hub 授权只能通过对应任务处理，不能执行为 PowerShell')
+    }
     // Already settled (including hub gates settled without PowerShell) — do not re-exec.
     if (action.status !== 'pending') {
       return action

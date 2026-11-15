@@ -23,12 +23,14 @@ const RATE_LIMIT_MAX = 120
  * the event bus.
  */
 export class HubServer {
-  public readonly port: number
+  public port: number
   private server: http.Server | null = null
   private sockets = new Map<string, WsConnection>()
   private rateBuckets = new Map<string, { count: number; resetAt: number }>()
   private sweepTimer: NodeJS.Timeout | null = null
-  private approvals = new Map<string, { resolve: (approved: boolean) => void }>()
+  private approvals = new Map<string, { promise: Promise<boolean>; resolve: (approved: boolean) => void }>()
+  private approvalRuns = new Map<string, (approved: boolean) => void>()
+  private stopped = false
 
   public readonly registry: HubRegistry
   public readonly tasks: TaskManager
@@ -47,10 +49,16 @@ export class HubServer {
     }
   ) {
     this.port = opts.port ?? HUB_PORT
-    this.auth = new HubAuth({ signingKey: this.loadOrCreateSigningKey() })
+    let lastTokenAt = 0
+    this.auth = new HubAuth({ signingKey: this.loadOrCreateSigningKey(), now: () => {
+      lastTokenAt = Math.max(Date.now(), lastTokenAt + 1)
+      return lastTokenAt
+    } })
     this.registry = new HubRegistry({
+      now: opts.now,
       onOffline: (appId) => {
         const cancelled = this.tasks.cancelAppTasks(appId)
+        this.closeSession(appId, 'app offline')
         this.publish({ eventId: randomUUID(), sourceAppId: 'hub', type: 'app.offline', timestamp: Date.now(), payload: { appId, cancelled } })
       },
       onRegistered: (app) => {
@@ -65,6 +73,16 @@ export class HubServer {
     })
     this.tasks = new TaskManager({ now: opts.now })
     this.tasks.onAny((event) => {
+      if (['task.cancelled', 'task.completed', 'task.failed'].includes(event.type)) {
+        const taskId = event.payload.taskId
+        this.settleApproval(taskId, false)
+        this.approvalRuns.get(taskId)?.(false)
+      }
+      if (event.type === 'task.cancelled') {
+        const taskId = event.payload.taskId
+        const conn = this.sockets.get(event.sourceAppId)
+        if (conn?.isOpen) conn.send(JSON.stringify({ type: 'task.cancelled', taskId, payload: event.payload, timestamp: Date.now() }))
+      }
       this.publish(event)
     })
     this.restoreTrustedTools()
@@ -124,6 +142,7 @@ export class HubServer {
   }
 
   public start(): Promise<void> {
+    this.stopped = false
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => this.handleHttp(req, res))
 
@@ -156,6 +175,8 @@ export class HubServer {
       })
 
       this.server.listen(this.port, '127.0.0.1', () => {
+        const address = this.server?.address()
+        if (address && typeof address !== 'string') this.port = address.port
         console.log(`[Hub] Local Agent Hub listening on http://127.0.0.1:${this.port}`)
         this.sweepTimer = setInterval(() => {
           this.registry.sweepOffline(HEARTBEAT_TIMEOUT_MS)
@@ -167,6 +188,13 @@ export class HubServer {
   }
 
   public stop() {
+    this.stopped = true
+    for (const task of this.tasks.list()) this.cancelTask(task.taskId, 'hub shutting down')
+    for (const taskId of this.approvals.keys()) this.settleApproval(taskId, false)
+    for (const resolve of this.approvalRuns.values()) resolve(false)
+    this.approvalRuns.clear()
+    for (const app of this.registry.list()) this.auth.revokeApp(app.manifest.appId)
+    this.rateBuckets.clear()
     if (this.sweepTimer) clearInterval(this.sweepTimer)
     for (const conn of this.sockets.values()) conn.close(1001, 'hub shutting down')
     this.sockets.clear()
@@ -238,7 +266,16 @@ export class HubServer {
       if (req.method === 'POST' && url.pathname === '/api/v1/register') {
         const body = await this.readBody(req)
         const manifest = JSON.parse(body) as AppManifest
+        if (/^system\./i.test(manifest.appId) || this.registry.isBuiltin(manifest.appId)) {
+          this.json(res, 403, { ok: false, error: 'builtin app identifiers are reserved' })
+          return
+        }
+        const existing = this.registry.get(manifest.appId)
         const app = this.registry.register(manifest)
+        if (existing) {
+          this.tasks.cancelAppTasks(manifest.appId, 'app session replaced')
+          this.closeSession(manifest.appId, 'session replaced')
+        }
         const sessionToken = this.auth.issueToken(app.manifest.appId)
         app.sessionToken = sessionToken
         this.persistState()
@@ -250,7 +287,7 @@ export class HubServer {
       }
 
       // ---- authenticated endpoints
-      if (!appIdFromToken || appIdFromToken !== headerAppId) {
+      if (!appIdFromToken || appIdFromToken !== headerAppId || !this.registry.get(appIdFromToken)?.online || this.registry.isBuiltin(appIdFromToken)) {
         this.json(res, 401, { ok: false, error: 'invalid or missing session token' })
         return
       }
@@ -265,9 +302,7 @@ export class HubServer {
           this.json(res, 403, { ok: false, error: 'cannot unregister another app' })
           return
         }
-        this.tasks.cancelAppTasks(target, 'app unregistered')
-        this.registry.unregister(target)
-        this.auth.revokeApp(target)
+        this.removeApp(target)
         this.json(res, 200, { ok: true })
         return
       }
@@ -286,32 +321,20 @@ export class HubServer {
 
       if (req.method === 'POST' && url.pathname === '/api/v1/tasks') {
         const body = JSON.parse(await this.readBody(req))
-        const tool = this.registry.findTool(appIdFromToken, body.toolId)
-        if (!tool) {
-          this.json(res, 404, { ok: false, error: `tool ${body.toolId} not found for this app` })
-          return
-        }
-        const task = this.tasks.create({
-          appId: appIdFromToken,
-          toolId: body.toolId,
-          parameters: body.parameters ?? {},
-          priority: body.priority,
-          origin: body.origin ?? 'user',
-        })
-        const decision = this.auth.evaluate(tool.riskLevel, this.registry.isTrusted(appIdFromToken, tool.toolId))
-        if (decision === 'approve' || tool.requiresApproval) {
-          this.tasks.markAwaitingApproval(task.taskId)
-          this.json(res, 202, { ok: true, data: { taskId: task.taskId, status: task.status } })
-          return
-        }
-        this.tasks.markDispatched(task.taskId)
-        this.deliverTask(task.taskId, appIdFromToken, body.toolId, body.parameters ?? {})
-        this.json(res, 200, { ok: true, data: { taskId: task.taskId, status: task.status } })
+        const task = this.createDispatch({ appId: appIdFromToken, toolId: body.toolId, parameters: body.parameters === undefined ? {} : body.parameters, priority: body.priority, origin: 'user' })
+        const pending = task.status === 'awaiting_approval'
+        void this.runDispatch(task.taskId).catch((err) => this.tasks.fail(task.taskId, { code: 'DISPATCH_FAILED', message: String(err) }))
+        this.json(res, pending ? 202 : 200, { ok: true, data: { taskId: task.taskId, status: task.status } })
         return
       }
 
       if (req.method === 'GET' && url.pathname === '/api/v1/tasks') {
-        const appId = url.searchParams.get('appId') ?? undefined
+        const requestedApp = url.searchParams.get('appId')
+        if (requestedApp && requestedApp !== appIdFromToken) {
+          this.json(res, 403, { ok: false, error: 'cannot query another app' })
+          return
+        }
+        const appId = appIdFromToken
         const status = (url.searchParams.get('status') as any) ?? undefined
         this.json(res, 200, { ok: true, data: this.tasks.list({ appId, status }) })
         return
@@ -326,7 +349,7 @@ export class HubServer {
           this.json(res, 404, { ok: false, error: 'task not found' })
           return
         }
-        if (task.appId !== appIdFromToken && appIdFromToken !== 'hub') {
+        if (task.appId !== appIdFromToken) {
           this.json(res, 403, { ok: false, error: 'task belongs to another app' })
           return
         }
@@ -336,40 +359,22 @@ export class HubServer {
           return
         }
 
-        const body = sub ? JSON.parse(await this.readBody(req)) : {}
-        if (sub === 'progress') {
-          this.tasks.updateProgress(taskId, body)
-          this.json(res, 200, { ok: true })
-          return
-        }
-        if (sub === 'complete') {
-          this.tasks.complete(taskId, body.result)
-          this.json(res, 200, { ok: true })
-          return
-        }
-        if (sub === 'fail') {
-          this.tasks.fail(taskId, body.error ?? { code: 'UNKNOWN', message: 'failed' })
-          this.json(res, 200, { ok: true })
-          return
-        }
-        if (sub === 'cancel') {
-          this.tasks.cancel(taskId, body.reason)
-          this.json(res, 200, { ok: true })
-          return
-        }
         if (sub === 'approve' || sub === 'reject') {
-          const approved = sub === 'approve'
-          const hadWaiter = this.resolveApproval(taskId, approved)
-          // HTTP-created tasks may sit in awaiting_approval with no in-process waiter.
-          if (!hadWaiter && task.status === 'awaiting_approval') {
-            if (approved) {
-              this.tasks.markDispatched(taskId)
-              this.deliverTask(taskId, task.appId, task.toolId, task.parameters)
-            } else {
-              this.tasks.cancel(taskId, 'rejected')
-            }
-          }
-          this.json(res, 200, { ok: true })
+          this.json(res, 403, { ok: false, error: 'approval requires trusted in-process UI' })
+          return
+        }
+        if (sub && req.method !== 'POST') {
+          this.json(res, 405, { ok: false, error: 'POST required' })
+          return
+        }
+        const body = sub ? JSON.parse(await this.readBody(req)) : {}
+        let updated = null
+        if (sub === 'progress') updated = this.tasks.updateProgress(taskId, body)
+        if (sub === 'complete') updated = this.tasks.complete(taskId, body.result)
+        if (sub === 'fail') updated = this.tasks.fail(taskId, body.error ?? { code: 'UNKNOWN', message: 'failed' })
+        if (sub === 'cancel') updated = this.cancelTask(taskId, body.reason)
+        if (sub) {
+          this.json(res, updated ? 200 : 409, updated ? { ok: true } : { ok: false, error: 'invalid task transition' })
           return
         }
       }
@@ -395,6 +400,7 @@ export class HubServer {
         description: t.description,
         category: t.category,
         riskLevel: t.riskLevel,
+        inputSchema: t.inputSchema,
         trusted: this.registry.isTrusted(app.manifest.appId, t.toolId),
       })),
     }
@@ -421,15 +427,18 @@ export class HubServer {
     const url = new URL(req.url ?? '/', `http://127.0.0.1:${this.port}`)
     const appId = url.searchParams.get('appId')
     const secret = url.searchParams.get('secret')
-    if (!appId || !secret || !this.registry.authenticate(appId, secret)) {
+    if (url.pathname !== '/ws' || !appId || !secret || this.registry.isBuiltin(appId) || /^system\./i.test(appId) || !this.registry.authenticate(appId, secret)) {
       conn.close(1008, 'unauthorized')
       return
     }
+    this.sockets.get(appId)?.close(1000, 'connection replaced')
     this.sockets.set(appId, conn)
     this.registry.heartbeat(appId)
-    conn.onMessage((raw) => this.handleAppMessage(appId, raw))
+    conn.onMessage((raw) => {
+      if (this.sockets.get(appId) === conn && this.registry.get(appId)?.online) this.handleAppMessage(appId, raw)
+    })
     conn.onClose(() => {
-      this.sockets.delete(appId)
+      if (this.sockets.get(appId) === conn) this.sockets.delete(appId)
     })
     conn.send(
       JSON.stringify({
@@ -448,6 +457,7 @@ export class HubServer {
         this.registry.setActiveTasks(appId, Number(msg.payload?.activeTasks) || 0)
         return
       }
+      if (['task.progress', 'task.completed', 'task.failed'].includes(msg.type) && this.tasks.get(msg.taskId)?.appId !== appId) return
       if (msg.type === 'task.progress') {
         this.tasks.updateProgress(msg.taskId, msg.payload ?? {})
         return
@@ -459,15 +469,6 @@ export class HubServer {
       if (msg.type === 'task.failed') {
         this.tasks.fail(msg.taskId, msg.payload?.error ?? { code: 'UNKNOWN', message: 'failed' })
         return
-      }
-      if (msg.type === 'event') {
-        this.publish({
-          eventId: randomUUID(),
-          sourceAppId: appId,
-          type: msg.payload?.type ?? 'task.progress',
-          timestamp: Date.now(),
-          payload: msg.payload,
-        })
       }
     } catch {
       /* malformed frames are ignored */
@@ -510,51 +511,93 @@ export class HubServer {
     parameters: Record<string, any>
     origin?: 'user' | 'luna' | 'system'
   }): Promise<{ taskId: string; status: string }> {
-    const tool = this.registry.findTool(input.appId, input.toolId)
-    if (!tool) throw new Error(`tool ${input.toolId} not available on ${input.appId}`)
-    const app = this.registry.get(input.appId)
-    if (!app?.online) throw new Error(`${input.appId} is offline`)
-
-    const task = this.tasks.create({ ...input, origin: input.origin ?? 'luna' })
-    const decision = this.auth.evaluate(tool.riskLevel, this.registry.isTrusted(input.appId, input.toolId))
-    if (decision === 'approve' || tool.requiresApproval) {
-      this.tasks.markAwaitingApproval(task.taskId)
-      const approved = await this.opts.requestApproval(task.taskId, input.appId, input.toolId, input.parameters)
-      if (!approved) {
-        this.tasks.cancel(task.taskId, 'user rejected')
-        return { taskId: task.taskId, status: 'cancelled' }
-      }
-      task.approvedBy = 'user'
-    }
-    this.tasks.markDispatched(task.taskId)
-    this.deliverTask(task.taskId, input.appId, input.toolId, input.parameters)
+    const task = this.createDispatch(input)
+    await this.runDispatch(task.taskId)
     return { taskId: task.taskId, status: task.status }
   }
 
-  /** Prefer the live WS socket; fall back to the in-process executeTask hook (builtins). */
-  private deliverTask(
-    taskId: string,
-    appId: string,
-    toolId: string,
-    parameters: Record<string, any>
-  ) {
-    if (this.sendTaskDispatched(taskId, appId, toolId, parameters)) return
-    void this.opts.executeTask(taskId, appId, toolId, parameters).catch(() => {})
+  private createDispatch(input: { appId: string; toolId: string; parameters: Record<string, any>; priority?: 'low' | 'normal' | 'high'; origin?: 'user' | 'luna' | 'system' }) {
+    if (this.stopped) throw new Error('hub stopped')
+    if (input.priority !== undefined && !['low', 'normal', 'high'].includes(input.priority)) throw new Error('invalid priority')
+    const tool = this.registry.validateTool(input.appId, input.toolId, input.parameters)
+    const task = this.tasks.create({ ...input, origin: input.origin ?? 'luna' })
+    if (this.auth.evaluate(tool.riskLevel, this.registry.isTrusted(input.appId, input.toolId)) === 'approve' || tool.requiresApproval) {
+      this.tasks.markAwaitingApproval(task.taskId)
+    }
+    return task
+  }
+
+  private async runDispatch(taskId: string): Promise<void> {
+    const task = this.tasks.get(taskId)
+    if (!task || !['pending', 'awaiting_approval'].includes(task.status)) return
+    const app = this.registry.get(task.appId)
+    try {
+      if (task.status === 'awaiting_approval') {
+        const cancelled = new Promise<boolean>((resolve) => this.approvalRuns.set(taskId, resolve))
+        const approval = Promise.resolve().then(() => {
+          if (task.status !== 'awaiting_approval') return false
+          return this.opts.requestApproval(taskId, task.appId, task.toolId, task.parameters)
+        })
+        const approved = await Promise.race([approval, cancelled])
+        this.approvalRuns.delete(taskId)
+        this.settleApproval(taskId, false)
+        if (task.status !== 'awaiting_approval') return
+        if (!approved) { this.cancelTask(taskId, 'user rejected'); return }
+        task.approvedBy = 'user'
+      }
+      if (this.stopped || app !== this.registry.get(task.appId) || !app?.online) {
+        this.cancelTask(taskId, 'app unavailable')
+        return
+      }
+      this.registry.validateTool(task.appId, task.toolId, task.parameters)
+      if (!this.tasks.markDispatched(taskId)) return
+      // Event listeners may synchronously cancel/remove the task at dispatch.
+      if (task.status !== 'running' || this.stopped || app !== this.registry.get(task.appId) || !app.online) return
+      if (!this.registry.isBuiltin(task.appId) && this.sendTaskDispatched(taskId, task.appId, task.toolId, task.parameters)) return
+      void this.opts.executeTask(taskId, task.appId, task.toolId, task.parameters).catch((err) => {
+        this.tasks.fail(taskId, { code: 'EXECUTION_FAILED', message: err instanceof Error ? err.message : String(err) })
+      })
+    } catch (err) {
+      this.tasks.fail(taskId, { code: 'DISPATCH_FAILED', message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      this.approvalRuns.delete(taskId)
+      this.settleApproval(taskId, false)
+    }
   }
 
   public waitForApproval(taskId: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      this.approvals.set(taskId, { resolve })
-    })
+    const existing = this.approvals.get(taskId)
+    if (existing) return existing.promise
+    if (this.stopped || this.tasks.get(taskId)?.status !== 'awaiting_approval') return Promise.resolve(false)
+    let settle!: (approved: boolean) => void
+    const promise = new Promise<boolean>((resolve) => { settle = resolve })
+    this.approvals.set(taskId, { promise, resolve: settle })
+    return promise
   }
 
-  /** Unblock a waitForApproval waiter (UI Allow/Deny or HTTP approve/reject). */
-  public resolveApproval(taskId: string, approved: boolean): boolean {
+  private settleApproval(taskId: string, approved: boolean): boolean {
     const pending = this.approvals.get(taskId)
     if (!pending) return false
     this.approvals.delete(taskId)
     pending.resolve(approved)
     return true
+  }
+
+  /** Only trusted in-process callers may resolve human approval. */
+  public resolveApproval(taskId: string, approved: boolean): boolean {
+    if (this.stopped || this.tasks.get(taskId)?.status !== 'awaiting_approval') return false
+    return this.settleApproval(taskId, approved)
+  }
+
+  public cancelTask(taskId: string, reason?: string) {
+    return this.tasks.cancel(taskId, reason)
+  }
+
+  private closeSession(appId: string, reason: string) {
+    this.auth.revokeApp(appId)
+    const conn = this.sockets.get(appId)
+    this.sockets.delete(appId)
+    conn?.close(1000, reason)
   }
 
   public trustTool(appId: string, toolId: string) {
@@ -600,10 +643,20 @@ export class HubServer {
   public describeToolsForLuna(): string {
     const tools = this.registry.allTools()
     if (tools.length === 0) return ''
-    const lines = tools.map((entry, idx) => {
+    const lines: string[] = []
+    let size = 0
+    for (const entry of tools.slice(0, 100)) {
+      const schema = JSON.stringify(entry.tool.inputSchema)
       const trust = this.registry.isTrusted(entry.appId, entry.tool.toolId) ? ' [已信任]' : ''
-      return `${idx + 1}. ${entry.appName} (${entry.appId}) — ${entry.tool.name} [${entry.tool.riskLevel}]${trust}\n   toolId: ${entry.tool.toolId}\n   ${entry.tool.description}`
-    })
+      const line = `${lines.length + 1}. ${entry.appName.slice(0, 200)} (${entry.appId}) — ${entry.tool.name.slice(0, 200)} [${entry.tool.riskLevel}]${trust}
+   toolId: ${entry.tool.toolId}
+   ${entry.tool.description.slice(0, 1000)}
+   inputSchema: ${schema}`
+      if (schema.length > 8000 || size + line.length > 24000) continue
+      lines.push(line)
+      size += line.length
+    }
+    if (lines.length < tools.length) lines.push('工具清单已截断；请通过 Hub 面板查看其余能力。')
     return [
       '当前电脑已接入以下本地软件能力（Muse Local Agent Hub）：',
       ...lines,

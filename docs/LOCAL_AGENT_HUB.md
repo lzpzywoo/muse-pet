@@ -38,7 +38,7 @@ When an application registers with the Hub:
 2. **Bidirectional Dispatch**:
    - You (or Luna on your mobile phone) can say *"Check my download queue"* or *"Start rendering scene A"*.
    - Luna emits a structured `local_tool` instruction, which the Hub translates into a `task.dispatched` event sent to your software over WebSocket.
-3. **Proactive Notifications**: Your software can push a `task.completed` event when done—triggering a celebratory speech bubble above your desktop Pet and notifying your mobile phone.
+3. **Task Results**: Your software can report completion of its own running task. Muse Pet shows the result locally; Luna-requested tasks also return their actual result to the originating conversation. Unsolicited events produce local notifications and are not sent as conversation results.
 
 ```text
 ┌────────────────────────────┐              ┌───────────────────────────┐
@@ -271,10 +271,16 @@ The WebSocket connection (`ws://127.0.0.1:19840/ws`) is a full-duplex communicat
   }
   ```
 - **Response (Allowed)**: `{"ok": true, "data": {"taskId": "tsk_...", "status": "running"}}`
-- **Response (Gated)**: `{"ok": true, "data": {"taskId": "tsk_...", "status": "awaiting_approval"}}`
+- **Response (Gated, HTTP 202)**: `{"ok": true, "data": {"taskId": "tsk_...", "status": "awaiting_approval"}}`. A Hub approval card appears in the desktop terminal. Creation does not wait for the user to answer.
+- External `/tasks/:id/approve` and `/reject` requests return **403**, including requests from the task owner. Only trusted in-process terminal Allow/Deny resolves approval; there is no external administrator-token exception.
+- The `system.*` namespace is reserved for builtins. Re-registering an app requires its original secret and replaces its old session, cancelling old tasks.
+- Parameters must be an object and pass the tool's declared schema. Validation covers required properties, types, enum/const, additional properties, array/string limits and numeric bounds; this is a bounded subset of JSON Schema.
 
 #### 2. Query Task Status
 `GET /api/v1/tasks/:taskId`
+- Requires the owning application's bearer token and matching `X-App-Id`. `GET /api/v1/tasks` lists only that application's tasks; querying another app returns **403**.
+- Mutating endpoints `/progress`, `/complete`, `/fail` and `/cancel` require **POST** and task ownership. Illegal transitions return **409**. Completed, failed and cancelled tasks are terminal; late worker updates cannot overwrite them.
+- Cancellation settles pending approval and sends a cooperative `task.cancelled` frame to a connected worker. Workers must stop their own execution; Hub cancellation does not forcibly kill an external process.
 - **Response**:
   ```json
   {
@@ -294,15 +300,24 @@ The WebSocket connection (`ws://127.0.0.1:19840/ws`) is a full-duplex communicat
 
 ---
 
+### Phone and desktop conversation flow
+
+Use the same signed-in main conversation while Muse Pet stays running. On the phone, send `/hub tools` (or `/hub`) to request the current tool catalog and schemas, then ask Luna to use a listed tool. Read-only tools run without a gate; write tools requiring approval show a card on the Windows terminal.
+
+The background observer accepts only fresh, stable-ID instructions following a user request. The first loaded history is a baseline; restart, old history, quoted instructions and replies to tool results do not execute work again. Desktop requests use the same route, including requests carrying the injected tool catalog.
+
+Final results are attributed to their task and sent as local data, with bounded text and separate PNG/JPEG attachments for both screen tools. Results stay bound to the original account and conversation. Delivery is serialized; definite preflight failures can wait for a later healthy observation, while uncertain submissions are never automatically resent. The local terminal reports queued or uncertain delivery. Live phone-to-Muse validation has not yet been performed; automated tests cover the bridge and mocked Electron integration.
+
 ### WebSocket Channel
+
+Task progress/completion/failure frames can update only the authenticated app's own running tasks. Generic events cannot impersonate task lifecycle events or bypass terminal-state checks.
 
 **Connect**: `ws://127.0.0.1:19840/ws?appId=<appId>&secret=<secret>`
 
 #### Incoming Message: Task Dispatched
 ```json
 {
-  "eventId": "evt_12345",
-  "sourceAppId": "hub",
+  "taskId": "tsk_abc123",
   "type": "task.dispatched",
   "timestamp": 1794646789000,
   "payload": {

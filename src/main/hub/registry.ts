@@ -1,3 +1,4 @@
+import { validateToolParameters } from './input-schema'
 import { randomBytes, createHash } from 'node:crypto'
 import type { AppManifest, RegisteredApp, ToolDefinition, RiskLevel } from './sdk-types'
 
@@ -35,6 +36,9 @@ export class HubRegistry {
     }
 
     const appId = manifest.appId
+    if (this.secrets.has(appId) && this.secrets.get(appId) !== manifest.secret) {
+      throw new Error('existing app requires its original secret')
+    }
     const sessionToken = randomBytes(24).toString('hex')
     const existing = this.apps.get(appId)
 
@@ -82,11 +86,14 @@ export class HubRegistry {
       return { ok: false, error: 'at least one tool must be declared.' }
     }
     for (const tool of manifest.tools) {
-      if (!tool.toolId || !/^[a-z0-9._-]{2,60}$/i.test(tool.toolId)) {
-        return { ok: false, error: `invalid toolId: ${String(tool.toolId)}` }
+      if (!tool || typeof tool.toolId !== 'string' || !tool.toolId || !/^[a-z0-9._-]{2,60}$/i.test(tool.toolId)) {
+        return { ok: false, error: `invalid toolId: ${String(tool?.toolId)}` }
       }
-      if (!tool.name || !tool.description) {
+      if (!tool || typeof tool.name !== 'string' || !tool.name || typeof tool.description !== 'string' || !tool.description) {
         return { ok: false, error: `tool ${tool.toolId} needs name and description.` }
+      }
+      if (!tool.inputSchema || typeof tool.inputSchema !== 'object' || Array.isArray(tool.inputSchema)) {
+        return { ok: false, error: `tool ${tool.toolId} needs an object inputSchema.` }
       }
       if (!['read-only', 'write-safe', 'write-dangerous'].includes(tool.riskLevel)) {
         return { ok: false, error: `tool ${tool.toolId} has invalid riskLevel.` }
@@ -189,6 +196,15 @@ export class HubRegistry {
     const app = this.apps.get(appId)
     if (!app) return null
     return app.manifest.tools.find((t) => t.toolId === toolId) ?? null
+  }
+
+  public validateTool(appId: string, toolId: string, parameters: unknown): ToolDefinition {
+    const app = this.get(appId)
+    if (!app?.online) throw new Error(`${appId} is offline`)
+    const tool = this.findTool(appId, toolId)
+    if (!tool) throw new Error(`tool ${toolId} not available on ${appId}`)
+    validateToolParameters(parameters, tool.inputSchema)
+    return tool
   }
 
   public allTools(): Array<{ appId: string; appName: string; tool: ToolDefinition }> {

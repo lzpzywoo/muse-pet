@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import HubToolInvocation, { HubResultPreview } from './HubToolInvocation'
 import type {
   ChatMessage,
   UserProfile,
@@ -267,7 +268,7 @@ export default function ChatApp() {
   const [showHubPanel, setShowHubPanel] = useState(false)
   const [hubState, setHubState] = useState<MuseHubState | null>(null)
   const [isLoadingHub, setIsLoadingHub] = useState(false)
-  const [runningHubTool, setRunningHubTool] = useState<string | null>(null)
+  const [hubError, setHubError] = useState('')
   const [cloudTab, setCloudTab] = useState<'activity' | 'goals' | 'files' | 'console'>('activity')
   const [cloudSnapshot, setCloudSnapshot] = useState<MuseCloudSnapshot | null>(null)
   const [isLoadingCloud, setIsLoadingCloud] = useState(false)
@@ -314,9 +315,24 @@ export default function ChatApp() {
     setIsLoadingHub(true)
     try {
       const state = await window.chatApi?.getHubState()
-      if (state) setHubState(state)
+      if (!state) throw new Error('Hub 不可用。')
+      setHubState(state)
+    } catch (err) {
+      setHubError(err instanceof Error ? err.message : '刷新 Hub 失败。')
     } finally {
       setIsLoadingHub(false)
+    }
+  }
+
+  const performHubAction = async (action: () => Promise<{ ok: boolean; error?: string } | undefined>) => {
+    setHubError('')
+    try {
+      const result = await action()
+      if (!result?.ok) throw new Error(result?.error || 'Hub 操作失败。')
+    } catch (err) {
+      setHubError(err instanceof Error ? err.message : 'Hub 操作失败。')
+    } finally {
+      await refreshHubState()
     }
   }
 
@@ -1624,6 +1640,8 @@ export default function ChatApp() {
               任何软件接入后即可被 Luna 调度。手机问「看看我电脑」会自动调用系统屏幕视觉。
             </div>
 
+            {hubError && <p role="alert" className="text-rose-300">{hubError}</p>}
+
             {(!hubState?.apps || hubState.apps.length === 0) && (
               <div className="text-[11px] text-slate-400">
                 暂无已接入的软件。内置「系统屏幕视觉 / 系统状态 / 本地文件」应始终在线；第三方应用接入后可在此查看、调用或移除。
@@ -1672,21 +1690,7 @@ export default function ChatApp() {
                         <button
                           type="button"
                           title="从 Hub 移除该应用"
-                          onClick={async () => {
-                            const res = await window.chatApi?.removeHubApp(app.appId)
-                            if (!res?.ok) {
-                              setMessages((prev) => [
-                                ...prev,
-                                {
-                                  id: String(Date.now()),
-                                  role: 'assistant',
-                                  content: `⚠️ 移除 ${app.appId} 失败：${res?.error || '未知错误'}`,
-                                  timestamp: Date.now(),
-                                },
-                              ])
-                            }
-                            void refreshHubState()
-                          }}
+                          onClick={() => void performHubAction(async () => window.chatApi?.removeHubApp(app.appId))}
                           className="px-1.5 py-0.5 rounded font-terminal text-[9px] border border-rose-400/35 text-rose-300 hover:bg-rose-500/15"
                         >
                           移除
@@ -1699,7 +1703,7 @@ export default function ChatApp() {
                     {app.tools.map((tool) => (
                       <div
                         key={tool.toolId}
-                        className="flex items-center justify-between gap-2 px-2 py-1 rounded-lg bg-black/30 border border-white/[0.07]"
+                        className="space-y-2 px-2 py-2 rounded-lg bg-black/30 border border-white/[0.07]"
                       >
                         <div className="min-w-0">
                           <div className="font-terminal text-[10.5px] text-slate-200 truncate">
@@ -1720,13 +1724,11 @@ export default function ChatApp() {
                           >
                             {tool.riskLevel}
                           </span>
-                          {tool.riskLevel !== 'read-only' && (
+                          {tool.riskLevel === 'write-dangerous' && <span className="text-rose-300 text-[10px]">始终需批准</span>}
+                          {tool.riskLevel === 'write-safe' && (
                             <button
                               type="button"
-                              onClick={async () => {
-                                await window.chatApi?.setHubToolTrusted(app.appId, tool.toolId, !tool.trusted)
-                                void refreshHubState()
-                              }}
+                              onClick={() => void performHubAction(async () => window.chatApi?.setHubToolTrusted(app.appId, tool.toolId, !tool.trusted))}
                               className={`px-1.5 py-0.5 rounded font-terminal text-[9px] border transition-all ${
                                 tool.trusted
                                   ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300'
@@ -1736,36 +1738,8 @@ export default function ChatApp() {
                               {tool.trusted ? '已信任' : '需批准'}
                             </button>
                           )}
-                          <button
-                            type="button"
-                            disabled={runningHubTool !== null || !app.online}
-                            onClick={async () => {
-                              const key = `${app.appId}/${tool.toolId}`
-                              setRunningHubTool(key)
-                              try {
-                                const res = await window.chatApi?.runHubTool(app.appId, tool.toolId, {})
-                                if (!res?.ok) {
-                                  setMessages((prev) => [
-                                    ...prev,
-                                    {
-                                      id: String(Date.now()),
-                                      role: 'assistant',
-                                      content: `⚠️ 调用 ${key} 失败：${res?.error || '未知错误'}`,
-                                      timestamp: Date.now(),
-                                    },
-                                  ])
-                                } else {
-                                  void refreshHubState()
-                                }
-                              } finally {
-                                setRunningHubTool(null)
-                              }
-                            }}
-                            className="liquid-glass-pill px-1.5 py-0.5 rounded font-terminal text-[9px] text-sky-200 disabled:opacity-40"
-                          >
-                            {runningHubTool === `${app.appId}/${tool.toolId}` ? '...' : '调用'}
-                          </button>
                         </div>
+                        <HubToolInvocation appId={app.appId} tool={tool} online={app.online} refresh={refreshHubState} />
                       </div>
                     ))}
                   </div>
@@ -1773,41 +1747,29 @@ export default function ChatApp() {
               ))}
             </div>
 
-            {(hubState?.tasks || []).filter((t) => !['completed', 'failed', 'cancelled'].includes(t.status)).length > 0 && (
-              <div className="pt-2 border-t border-white/10 space-y-1.5">
-                <div className="font-terminal text-[10.5px] text-slate-300">进行中的任务</div>
-                {(hubState?.tasks || [])
-                  .filter((t) => !['completed', 'failed', 'cancelled'].includes(t.status))
-                  .slice(0, 6)
-                  .map((task) => (
-                    <div
-                      key={task.taskId}
-                      className="px-2.5 py-1.5 rounded-lg bg-white/[0.03] border border-white/10 flex items-center justify-between gap-2"
-                    >
-                      <div className="min-w-0 font-terminal text-[10.5px] text-slate-200 truncate">
-                        {task.appId} / {task.toolId}
-                        <span className="text-slate-500">
-                          {' '}· {formatHubTaskStatus(task.status)}
-                          {' '}· {formatHubTaskOrigin(task.origin)}
-                        </span>
-                        {task.progress?.message && (
-                          <span className="text-slate-400"> · {task.progress.message}</span>
-                        )}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          await window.chatApi?.cancelHubTask(task.taskId)
-                          void refreshHubState()
-                        }}
-                        className="text-rose-300 hover:text-rose-200 font-terminal text-[10px] flex-shrink-0"
-                      >
-                        取消
-                      </button>
+            <div aria-live="polite" className="pt-2 border-t border-white/10 space-y-2">
+              <div className="font-terminal text-[10.5px] text-slate-300">任务与最近结果</div>
+              {[
+                ...(hubState?.tasks || []).filter((task) => !['completed', 'failed', 'cancelled'].includes(task.status)),
+                ...(hubState?.tasks || []).filter((task) => ['completed', 'failed', 'cancelled'].includes(task.status))
+                  .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 8),
+              ].map((task) => (
+                <div key={task.taskId} className="px-2.5 py-2 rounded-lg bg-white/[0.03] border border-white/10">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 break-words text-slate-200">
+                      {task.appId} / {task.toolId} · {formatHubTaskStatus(task.status)} · {formatHubTaskOrigin(task.origin)}
+                      <div className="text-[10px] text-slate-500">{task.taskId}</div>
                     </div>
-                  ))}
-              </div>
-            )}
+                    {!['completed', 'failed', 'cancelled'].includes(task.status) && <button type="button"
+                      onClick={() => void performHubAction(async () => window.chatApi?.cancelHubTask(task.taskId))}
+                      className="min-h-8 px-2 text-rose-300 hover:text-rose-200 flex-shrink-0">取消</button>}
+                  </div>
+                  {task.progress?.message && <HubResultPreview value={task.progress.message} />}
+                  {task.error && <div className="text-rose-300"><HubResultPreview value={task.error} /></div>}
+                  {task.result !== undefined && <HubResultPreview value={task.result} />}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

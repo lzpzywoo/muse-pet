@@ -23,8 +23,9 @@ const bundleTs = (filePath) => {
 const { HubServer, HUB_PORT } = bundleTs('src/main/hub/hub-server.ts')
 
 test('HubServer: HTTP endpoints, app registration, task dispatch and WS event flow', async () => {
-  const tmpState = path.join(os.tmpdir(), `hub-test-${Date.now()}.json`)
-  const TEST_PORT = 19855
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-server-test-'))
+  const tmpState = path.join(tmpDir, 'state.json')
+  const TEST_PORT = 0
   let taskDispatched = null
 
   const hub = new HubServer({
@@ -39,7 +40,7 @@ test('HubServer: HTTP endpoints, app registration, task dispatch and WS event fl
   await hub.start()
 
   try {
-    const base = `http://127.0.0.1:${TEST_PORT}`
+    const base = `http://127.0.0.1:${hub.port}`
 
     // 1. Initial tools list (empty or only builtins)
     const initialTools = await (await fetch(`${base}/api/v1/tools`)).json()
@@ -93,7 +94,7 @@ test('HubServer: HTTP endpoints, app registration, task dispatch and WS event fl
     assert.equal(demo.online, true)
 
     // 5. Connect WebSocket client
-    const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT}/ws?appId=com.demo.downloader&secret=demo-secret-key-12345`)
+    const ws = new WebSocket(`ws://127.0.0.1:${hub.port}/ws?appId=com.demo.downloader&secret=demo-secret-key-12345`)
     const wsMessages = []
     await new Promise(r => ws.onopen = r)
     ws.onmessage = (e) => wsMessages.push(JSON.parse(e.data))
@@ -141,20 +142,24 @@ test('HubServer: HTTP endpoints, app registration, task dispatch and WS event fl
     hub.trustTool('com.demo.downloader', 'add_download') // trusted for later persistence check
     hub.untrustTool('com.demo.downloader', 'add_download')
 
+    const approveTask = hub.tasks.create({ appId: 'com.demo.downloader', toolId: 'add_download', parameters: {} })
+    hub.tasks.markAwaitingApproval(approveTask.taskId)
+    const rejectTask = hub.tasks.create({ appId: 'com.demo.downloader', toolId: 'add_download', parameters: {} })
+    hub.tasks.markAwaitingApproval(rejectTask.taskId)
     let approvalResolved = false
-    const waiter = hub.waitForApproval('tsk_ui_approve_1').then((ok) => {
+    const waiter = hub.waitForApproval(approveTask.taskId).then((ok) => {
       approvalResolved = true
       return ok
     })
     await new Promise((r) => setTimeout(r, 30))
     assert.equal(approvalResolved, false)
-    assert.equal(hub.resolveApproval('tsk_ui_approve_1', true), true)
+    assert.equal(hub.resolveApproval(approveTask.taskId, true), true)
     assert.equal(await waiter, true)
-    assert.equal(hub.resolveApproval('tsk_ui_approve_1', true), false)
+    assert.equal(hub.resolveApproval(approveTask.taskId, true), false)
 
     // Reject path
-    const rejectWaiter = hub.waitForApproval('tsk_ui_reject_1')
-    assert.equal(hub.resolveApproval('tsk_ui_reject_1', false), true)
+    const rejectWaiter = hub.waitForApproval(rejectTask.taskId)
+    assert.equal(hub.resolveApproval(rejectTask.taskId, false), true)
     assert.equal(await rejectWaiter, false)
 
     // Persist trust then restore on a fresh HubServer
@@ -163,7 +168,7 @@ test('HubServer: HTTP endpoints, app registration, task dispatch and WS event fl
     hub.stop()
 
     const hub2 = new HubServer({
-      port: TEST_PORT + 1,
+      port: 0,
       stateFilePath: tmpState,
       executeTask: async () => {},
       requestApproval: async () => true,
@@ -173,8 +178,8 @@ test('HubServer: HTTP endpoints, app registration, task dispatch and WS event fl
 
     // 9. Force-remove third-party apps from the panel path
     const hub3 = new HubServer({
-      port: TEST_PORT + 2,
-      stateFilePath: path.join(os.tmpdir(), `hub-test-remove-${Date.now()}.json`),
+      port: 0,
+      stateFilePath: path.join(tmpDir, 'remove.json'),
       executeTask: async () => {},
       requestApproval: async () => true,
     })
@@ -223,6 +228,6 @@ test('HubServer: HTTP endpoints, app registration, task dispatch and WS event fl
     }
   } finally {
     try { hub.stop() } catch {}
-    try { fs.unlinkSync(tmpState) } catch {}
+    fs.rmSync(tmpDir, { recursive: true, force: true })
   }
 })

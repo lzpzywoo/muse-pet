@@ -205,7 +205,7 @@ export class MuseClient {
         const ready = location.origin === 'https://muse.ai' && location.pathname === '/' && !location.search &&
           navigator.onLine && document.readyState === 'complete' && !!ta && !!col &&
           col.getAttribute('data-initial-history-motion') === 'complete' &&
-          !document.querySelector('[aria-busy="true"], [role="progressbar"]') &&
+          !document.querySelector('[aria-busy="true"], [role="progressbar"], [data-hatch-composer-action="stop"], [data-pel-click="chat_stop_generation"]') &&
           !/reconnecting|disconnected|offline|connection lost|重新连接|连接断开|网络异常/i.test(connectionSignals)
         const messages = Array.from(document.querySelectorAll('[data-message-item="true"]')).map(el => ({
           id: el.getAttribute('data-message-id') || '', role: el.getAttribute('data-message-role') || '',
@@ -219,10 +219,34 @@ export class MuseClient {
       await this.pcObserver({ account, conversation: '', ready: false, messages: [] })
     } finally { this.pcPolling = false }
   }
+  public async refreshToolObservation(): Promise<void> {
+    await this.pollPcObservation()
+  }
+
   public async sendPcReport(report: string, conversation: string, account: string) {
+    return this.sendLocalReport(report, conversation, account)
+  }
+
+  public async sendHubReport(
+    report: string,
+    conversation: string,
+    account: string,
+    image?: { imageBase64: string; imageMimeType: string; imageFileName: string }
+  ) {
+    return this.sendLocalReport(report, conversation, account, image, true)
+  }
+
+  private async sendLocalReport(
+    report: string,
+    conversation: string,
+    account: string,
+    image?: { imageBase64: string; imageMimeType: string; imageFileName: string },
+    hubBridge = false
+  ) {
     if (!this.pcAvailable() || account !== pcAccount(this.sessionStore.getCookies()) || this.museWindow?.webContents.getURL() !== conversation) {
       throw new PcReportNotSubmitted('PC bridge unavailable')
     }
+    this.aborted = false
     this.isSendingChat = true
     try {
       let submitError: string | null = null
@@ -232,10 +256,14 @@ export class MuseClient {
         () => {},
         () => {},
         (err) => { submitError = err },
-        { pcBridge: true, pcAccount: account }
+        { ...image, pcBridge: true, pcAccount: account, hubBridge }
       )
+      if (this.aborted) throw new Error('本地数据发送被中断，提交状态不确定')
       // Preflight/composer busy before click — definite non-submit for bridge retry.
-      if (submitError === 'pc_not_submitted') throw new PcReportNotSubmitted('PC composer busy')
+      if (submitError === 'pc_not_submitted') {
+        if (hubBridge && image) throw new Error('截图附件发送状态不确定，请手动重新请求')
+        throw new PcReportNotSubmitted('PC composer busy')
+      }
       // Anything else after an attempted click (or unknown) stays uncertain: never blind-retry.
       if (submitError) throw new Error(submitError)
     } catch (err) {
@@ -1566,6 +1594,7 @@ export class MuseClient {
     options?: {
       pcBridge?: boolean
       pcAccount?: string
+      hubBridge?: boolean
       imageBase64?: string
       imageMimeType?: string
       imageFileName?: string
@@ -1678,6 +1707,7 @@ export class MuseClient {
             if (imgB64) {
               try {
                 const fileInput = document.querySelector('input[type="file"]')
+                if (!fileInput && ${Boolean(options?.hubBridge)}) throw new Error('截图上传控件不可用')
                 if (fileInput) {
                   const binStr = atob(imgB64)
                   const bytes = new Uint8Array(binStr.length)
@@ -1706,6 +1736,11 @@ export class MuseClient {
                 }
               } catch (attachErr) {
                 console.warn('Attach image failed:', attachErr)
+                if (${Boolean(options?.hubBridge)}) {
+                  window.__museStreamError = '截图上传失败，未发送缺少图片的工具结果'
+                  window.__museStreamDone = true
+                  return
+                }
               }
             }
 

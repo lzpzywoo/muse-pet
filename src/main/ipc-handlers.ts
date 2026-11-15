@@ -13,7 +13,9 @@ import { SystemScreenApp, SYSTEM_SCREEN_APP_ID } from './hub/builtins/system-scr
 import { SystemSysApp, SYSTEM_SYS_APP_ID } from './hub/builtins/system-sys'
 import { SystemFilesApp, SYSTEM_FILES_APP_ID } from './hub/builtins/system-files'
 import type { HubEvent, LocalToolCall } from './hub/sdk-types'
-import { extractLocalToolCall } from './hub/local-tool-call'
+import { HubConversationBridge, type HubConversationDelivery, type HubConversationLedger } from './hub/conversation-bridge'
+import { isPcReportNotSubmitted } from './pc-status-bridge'
+import { waitForHubResult } from './hub/task-result'
 import type {
   ChatMessage,
   MusePlugin,
@@ -50,7 +52,9 @@ export function registerIpcHandlers(
       }
     },
     requestApproval: async (taskId: string, appId: string, toolId: string, params: any): Promise<boolean> => {
+      const approvalAccount = pcAccount(sessionStore.getCookies())
       const app = hub.registry.get(appId)
+      const decision = hub.waitForApproval(taskId)
       const title = `${app?.manifest.name || appId} · ${toolId}`
       const pending = localSecretary.createPendingAction(
         'hub_tool',
@@ -65,7 +69,7 @@ export function registerIpcHandlers(
         chatWin.webContents.send('secretary:action-updated', pending)
       }
       try {
-        const approved = await hub.waitForApproval(taskId)
+        const approved = (await decision) && approvalAccount === pcAccount(sessionStore.getCookies())
         // HTTP approve/reject (or any non-UI resolver) leaves the card pending;
         // settle it here so a later Allow cannot fall through to PowerShell.
         const stillOpen = localSecretary.getPendingAction(pending.id)
@@ -84,6 +88,7 @@ export function registerIpcHandlers(
       }
     },
   })
+  app.once('before-quit', () => hub.stop())
   hub.start().catch((err: any) => console.error('[Hub] start failed:', err))
   for (const builtin of builtinApps) {
     hub.registry.register(builtin.manifest)
@@ -98,10 +103,20 @@ export function registerIpcHandlers(
     return undefined
   }
 
+  async function runTrackedBuiltin(appId: string, toolId: string, parameters: Record<string, unknown>): Promise<any> {
+    const task = await hub.dispatch({ appId, toolId, parameters, origin: 'user' })
+    return waitForHubResult(hub, task.taskId)
+  }
+
   hub.bus.subscribe('*', (event: HubEvent) => {
     const chatWin = windowManager.getChatWindow()
     if (chatWin && !chatWin.isDestroyed()) {
       chatWin.webContents.send('hub:event', event)
+    }
+    if (['task.completed', 'task.failed', 'task.cancelled'].includes(event.type)) {
+      const task = hub.tasks.get(String(event.payload?.taskId))
+      if (task) void hubConversation.finish(task.taskId, { status: task.status, result: task.result, error: task.error })
+        .catch(err => console.error('[Hub] result delivery failed:', err?.message || err))
     }
     if (event.type === 'task.completed' || event.type === 'task.failed') {
       const app = hub.registry.get(String(event.sourceAppId))
@@ -137,7 +152,11 @@ export function registerIpcHandlers(
     snapshot: () => localSecretary.getSystemSnapshot(),
     send: (report, conversation, account) => museClient.sendPcReport(report, conversation, account),
   })
-  museClient.onPcObservation(o => pcBridge.observe(o))
+  // The same real DOM IDs drive desktop and phone tool requests.
+  museClient.onPcObservation(async o => {
+    await pcBridge.observe(o)
+    void hubConversation.observe(o).catch(err => console.error('[Hub] observation failed:', err?.message || err))
+  })
   const historyFilePath = path.join(app.getPath('userData'), 'chat_history.json')
   let messageHistory: ChatMessage[] = []
   let unreadCount = 0
@@ -174,12 +193,88 @@ export function registerIpcHandlers(
     }
   }
 
+  const preserveLocalHubMessages = (cloud: ChatMessage[]): ChatMessage[] => {
+    const ids = new Set(cloud.map(message => message.id))
+    const actionIds = new Set(cloud.map(message => message.pendingAction?.id).filter(Boolean))
+    const local = messageHistory.filter(message =>
+      message.pendingAction?.type === 'hub_tool' || message.id.startsWith('hub-result-'))
+    const pending = local.filter(message => message.pendingAction?.status === 'pending')
+    const recent = local.filter(message => message.pendingAction?.status !== 'pending').slice(-20)
+    return [...cloud, ...[...pending, ...recent].filter(message => !ids.has(message.id) &&
+      (!message.pendingAction || !actionIds.has(message.pendingAction.id)))]
+  }
+
   const broadcastMessagesSynced = () => {
     const chatWin = windowManager.getChatWindow()
     if (chatWin && !chatWin.isDestroyed()) {
       chatWin.webContents.send('chat:messages-synced', messageHistory)
     }
   }
+
+  const hubLedgerPath = path.join(app.getPath('userData'), 'hub_conversations.json')
+  const showHubDelivery = (delivery: HubConversationDelivery, note: string) => {
+    const id = `hub-result-${delivery.taskId}`
+    const message: ChatMessage = {
+      id,
+      role: 'assistant',
+      content: `${note}\n\n${delivery.body}`,
+      timestamp: Date.now(),
+      status: 'done',
+    }
+    const index = messageHistory.findIndex(m => m.id === id)
+    if (index >= 0) messageHistory[index] = message
+    else messageHistory.push(message)
+    savePersistedHistory()
+    broadcastMessagesSynced()
+  }
+  const hubConversation = new HubConversationBridge({
+    load: () => {
+      try {
+        const ledger = JSON.parse(fs.readFileSync(hubLedgerPath, 'utf8'))
+        if (ledger.version === 1 && Array.isArray(ledger.seen) && ledger.seen.every((id: unknown) => typeof id === 'string') &&
+            Array.isArray(ledger.claims) && ledger.claims.every((c: any) => c && typeof c.key === 'string' && typeof c.account === 'string' && typeof c.conversation === 'string' && typeof c.sourceMessageId === 'string' && c.call && typeof c.call.appId === 'string')) {
+          return ledger as HubConversationLedger
+        }
+      } catch { /* start with a fresh baseline for missing or corrupt state */ }
+      return null
+    },
+    save: ledger => {
+      fs.writeFileSync(hubLedgerPath + '.tmp', JSON.stringify(ledger), { mode: 0o600 })
+      fs.renameSync(hubLedgerPath + '.tmp', hubLedgerPath)
+    },
+    account: () => pcAccount(sessionStore.getCookies()),
+    dispatch: async (call, context) => {
+      if (context.account !== pcAccount(sessionStore.getCookies())) throw new Error('账号已切换')
+      if (call.appId === 'hub.catalog' && call.toolId === 'list') {
+        return { taskId: `catalog-${context.sourceMessageId}`, status: 'completed', result: hub.describeToolsForLuna() }
+      }
+      try {
+        const res = await hub.dispatch({ ...call, origin: 'luna' })
+        const task = hub.tasks.get(res.taskId)
+        return { ...res, status: task?.status, result: task?.result, error: task?.error }
+      } catch (err: any) {
+        return { taskId: `dispatch-error-${context.sourceMessageId}`, status: 'failed', error: { code: 'DISPATCH_ERROR', message: err?.message || String(err) } }
+      }
+    },
+    send: async delivery => {
+      showHubDelivery(delivery, '工具结果已就绪，正在同步到原会话。')
+      try {
+        const image = delivery.options?.image
+        const match = image?.match(/^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/=]+)$/)
+        if (image && !match) throw new Error('工具图片格式不受支持')
+        await museClient.sendHubReport(delivery.body, delivery.conversation, delivery.account, match ? {
+          imageBase64: match[2], imageMimeType: match[1], imageFileName: 'hub-screen.' + (match[1] === 'image/png' ? 'png' : 'jpg'),
+        } : undefined)
+      } catch (err) {
+        showHubDelivery(delivery, isPcReportNotSubmitted(err)
+          ? '工具结果已保留，等待原会话空闲后发送。'
+          : '工具结果发送状态不确定，已停止自动重发；如有需要，请手动重新请求。')
+        throw err
+      }
+    },
+    isNotSubmitted: isPcReportNotSubmitted,
+    onDelivery: delivery => showHubDelivery(delivery, '工具结果已提交到原会话。'),
+  })
 
   loadPersistedHistory()
   museClient.startCloudMessageWatcher()
@@ -215,8 +310,13 @@ export function registerIpcHandlers(
       }
       return m
     })
+    if (!changed && action.type === 'hub_tool' && action.status === 'pending') {
+      messageHistory.push({ id: `hub-approval-${action.id}`, role: 'assistant', content: '本地软件工具请求授权。', pendingAction: action, timestamp: Date.now(), status: 'done' })
+      changed = true
+    }
     if (changed) {
       savePersistedHistory()
+      broadcastMessagesSynced()
     }
   })
 
@@ -341,7 +441,7 @@ export function registerIpcHandlers(
       /(电脑|系统|本地|当前).*(状态|内存|cpu|负载|卡不卡|运行情况|高占用进程)/i.test(trimmed)
 
     if (isSysCmd || isSysNL) {
-      const snapRes = await systemSysApp.execute('snapshot', {})
+      const snapRes = await runTrackedBuiltin(SYSTEM_SYS_APP_ID, 'snapshot', {})
       pcBridge.skipLocallyHandled(rawContent)
       return {
         promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【当前电脑实时硬件与进程状态】\n${snapRes.snapshot}\n请根据以上真实本地数据，向用户汇报当前电脑运行健康度与高占用进程情况。\n[/MUSE_LOCAL_CONTEXT]`,
@@ -363,7 +463,7 @@ export function registerIpcHandlers(
     // 7. File search & read (`/find <kw>`, `/read <path>`)
     if (/^\/find\s+/i.test(trimmed)) {
       const kw = trimmed.replace(/^\/find\s+/i, '').trim()
-      const found = await systemFilesApp.execute('search', { keyword: kw })
+      const found = await runTrackedBuiltin(SYSTEM_FILES_APP_ID, 'search', { keyword: kw })
       return {
         promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【本地桌面/下载/文档目录搜索 "${kw}" 结果】\n${found.paths?.length > 0 ? found.paths.join('\n') : '未找到匹配文件'}\n请向用户清晰列出找到的文件路径。\n[/MUSE_LOCAL_CONTEXT]`,
       }
@@ -372,7 +472,7 @@ export function registerIpcHandlers(
     if (/^\/read\s+/i.test(trimmed)) {
       const targetPath = trimmed.replace(/^\/read\s+/i, '').trim()
       try {
-        const fileRes = await systemFilesApp.execute('read', { path: targetPath })
+        const fileRes = await runTrackedBuiltin(SYSTEM_FILES_APP_ID, 'read', { path: targetPath })
         return {
           promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_CONTEXT]\n【本地文件 ${fileRes.resolvedPath} 内容】\n${fileRes.content}\n请基于该文件的真实内容进行总结或解答。\n[/MUSE_LOCAL_CONTEXT]`,
         }
@@ -410,48 +510,6 @@ export function registerIpcHandlers(
     return { promptForMuse: rawContent }
   }
 
-  /**
-   * Run a Luna-requested local tool and return a compact text summary that can
-   * be sent back into the same Muse conversation.
-   */
-  const runLocalToolCall = async (call: LocalToolCall): Promise<string> => {
-    try {
-      if (call.appId === SYSTEM_SCREEN_APP_ID) {
-        const result = await systemScreenApp.execute(call.toolId, call.parameters || {})
-        return `[MUSE_LOCAL_TOOL_RESULT appId=${call.appId} toolId=${call.toolId}]
-${result.note || ''}
-画面尺寸: ${result.width}×${result.height}
-采集时间: ${new Date(result.capturedAt || Date.now()).toISOString()}
-图像数据已随本条消息的多模态附件提交，请直接查看画面并回答用户。`
-      }
-
-      if (call.appId === SYSTEM_SYS_APP_ID || call.appId === SYSTEM_FILES_APP_ID) {
-        const result = await executeBuiltinTool(call.appId, call.toolId, call.parameters || {})
-        const body =
-          call.appId === SYSTEM_SYS_APP_ID
-            ? String(result?.snapshot || '')
-            : call.toolId === 'search'
-              ? (result?.paths || []).join('\n') || '未找到匹配文件'
-              : `${result?.resolvedPath || ''}\n${result?.content || ''}`
-        return `[MUSE_LOCAL_TOOL_RESULT appId=${call.appId} toolId=${call.toolId}]
-${result?.note || ''}
-${body}`
-      }
-
-      const res = await hub.dispatch({
-        appId: call.appId,
-        toolId: call.toolId,
-        parameters: call.parameters || {},
-        origin: 'luna',
-      })
-      return `[MUSE_LOCAL_TOOL_RESULT appId=${call.appId} toolId=${call.toolId} taskId=${res.taskId}]
-任务已创建，状态: ${res.status}。完成后结果会自动汇报。`
-    } catch (err: any) {
-      return `[MUSE_LOCAL_TOOL_ERROR appId=${call.appId} toolId=${call.toolId}]
-${err?.message || String(err)}`
-    }
-  }
-
   // Receive background cloud message updates (e.g., from muse.ai web, media attachments, or initial cloud history)
   museClient.onCloudMessagesUpdated((cloudMessages, newAssistantMsg) => {
     if (cloudMessages.length > 0) {
@@ -481,7 +539,7 @@ ${err?.message || String(err)}`
         }
       }
 
-      messageHistory = cloudMessages.map((cm) => {
+      messageHistory = preserveLocalHubMessages(cloudMessages.map((cm) => {
         const pendingAction =
           cm.pendingAction || existingActionsByContent.get(cm.content.trim())
         const appliedPlugin =
@@ -496,7 +554,7 @@ ${err?.message || String(err)}`
           ...(appliedPlugin ? { appliedPlugin } : {}),
           ...(attachments ? { attachments } : {}),
         }
-      })
+      }))
       savePersistedHistory()
       broadcastMessagesSynced()
 
@@ -599,7 +657,7 @@ ${err?.message || String(err)}`
       if (messageHistory.length === 0 || !hasAnyAttachments) {
         const cloud = await museClient.fetchCloudMessages(false)
         if (cloud.length > 0) {
-          messageHistory = cloud
+          messageHistory = preserveLocalHubMessages(cloud)
           savePersistedHistory()
         }
       }
@@ -612,7 +670,7 @@ ${err?.message || String(err)}`
       museClient.syncAvatarAssets(true).catch(() => {})
       const cloud = await museClient.fetchCloudMessages(false)
       if (cloud.length > 0) {
-        messageHistory = cloud
+        messageHistory = preserveLocalHubMessages(cloud)
         savePersistedHistory()
         broadcastMessagesSynced()
       }
@@ -644,6 +702,9 @@ ${err?.message || String(err)}`
       chatWin?.webContents.send('chat:stream-end', pcReply)
       return
     }
+
+    // Establish the stable-ID baseline before a desktop turn appends new messages.
+    await museClient.refreshToolObservation()
 
     // Run LocalSecretary pre-flight inspection or attachment preparation
     let enriched: Awaited<ReturnType<typeof enrichWithLocalSecretary>>
@@ -717,57 +778,7 @@ ${err?.message || String(err)}`
           }
         }
 
-        // Muse Local Agent Hub: Luna requested a local tool call — run it and feed the result back
-        const localToolCall = extractLocalToolCall(finalContent)
-        if (localToolCall) {
-          void (async () => {
-            if (localToolCall.appId === SYSTEM_SCREEN_APP_ID && localToolCall.toolId === 'capture') {
-              try {
-                const shot = await localSecretary.captureDesktopScreen()
-                messageHistory.push({
-                  id: bubbleId + '-hub-screen',
-                  role: 'user',
-                  content: '[MUSE_LOCAL_TOOL_RESULT] 已按 Luna 请求截取当前桌面画面，请查看并回答。',
-                  attachments: [{ type: 'image', url: shot.fileUrl, title: '云浏览器请求的桌面截屏' }],
-                  timestamp: Date.now(),
-                })
-                savePersistedHistory()
-                broadcastMessagesSynced()
-                await museClient.sendChatMessage(
-                  '[MUSE_LOCAL_TOOL_RESULT appId=system.screen toolId=capture] 这是用户电脑当前桌面的真实截图，请基于画面内容回答用户之前的问题。',
-                  () => {},
-                  () => {},
-                  () => {},
-                  {
-                    imageBase64: shot.base64Data,
-                    imageMimeType: 'image/png',
-                    imageFileName: 'hub-screen.png',
-                  }
-                )
-              } catch (err: any) {
-                await museClient.sendChatMessage(
-                  `[MUSE_LOCAL_TOOL_ERROR appId=system.screen] 截屏失败: ${err?.message || err}`,
-                  () => {},
-                  () => {},
-                  () => {},
-                  {}
-                )
-              }
-              return
-            }
-
-            const summary = await runLocalToolCall(localToolCall)
-            messageHistory.push({
-              id: bubbleId + '-hub',
-              role: 'user',
-              content: summary,
-              timestamp: Date.now(),
-            })
-            savePersistedHistory()
-            broadcastMessagesSynced()
-            await museClient.sendChatMessage(summary, () => {}, () => {}, () => {}, {})
-          })()
-        }
+        // Hub instructions are handled once by the shared stable-ID observation path.
 
         // Check if Luna emitted a custom ```muse-plugin``` JSON block or if pre-flight synthesized one
         let appliedPlugin = enriched.appliedPlugin
@@ -831,18 +842,22 @@ ${err?.message || String(err)}`
       },
       enriched.imageOptions
     )
+    await museClient.refreshToolObservation()
   })
 
   // Local Secretary Agent IPC handlers
   ipcMain.handle('secretary:approve-action', async (_event, actionId: string) => {
     const hubTaskId = hubApprovalByActionId.get(actionId)
     if (hubTaskId) {
-      hub.resolveApproval(hubTaskId, true)
+      const accepted = hub.resolveApproval(hubTaskId, true)
       return localSecretary.settlePendingAction(
         actionId,
-        'approved',
-        '✓ 已批准，正在通过 Local Agent Hub 调度该工具。'
+        accepted ? 'approved' : 'denied',
+        accepted ? '✓ 已批准，正在通过 Local Agent Hub 调度该工具。' : '该任务已取消或不再等待授权，未执行。'
       )
+    }
+    if (localSecretary.getPendingAction(actionId)?.type === 'hub_tool') {
+      return localSecretary.settlePendingAction(actionId, 'denied', '授权已失效或任务已结束，未执行。')
     }
     return await localSecretary.approveAction(actionId)
   })
@@ -1059,6 +1074,7 @@ ${err?.message || String(err)}`
           name: t.name,
           description: t.description,
           category: t.category,
+          inputSchema: t.inputSchema,
           riskLevel: t.riskLevel,
           trusted: hub.registry.isTrusted(a.manifest.appId, t.toolId),
         })),
@@ -1090,17 +1106,16 @@ ${err?.message || String(err)}`
 
   ipcMain.handle('hub:run-tool', async (_event, appId: string, toolId: string, params: any) => {
     try {
-      const builtin = await executeBuiltinTool(appId, toolId, params)
-      if (builtin !== undefined) return { ok: true, result: builtin }
-      const res = await hub.dispatch({ appId, toolId, parameters: params || {}, origin: 'user' })
-      return { ok: true, ...res }
+      const res = await hub.dispatch({ appId, toolId, parameters: params ?? {}, origin: 'user' })
+      const task = hub.tasks.get(res.taskId)
+      return { ok: true, ...res, status: task?.status || res.status, result: task?.result }
     } catch (err: any) {
       return { ok: false, error: err?.message || String(err) }
     }
   })
 
   ipcMain.handle('hub:cancel-task', async (_event, taskId: string) => {
-    const task = hub.tasks.cancel(taskId, 'cancelled from terminal')
+    const task = hub.cancelTask(taskId, 'cancelled from terminal')
     return { ok: !!task }
   })
 

@@ -160,3 +160,48 @@ test('TaskManager: state machine transitions, progress, and cancellation', () =>
   assert.equal(tasks.cancelAppTasks('com.test.app'), 1)
   assert.equal(t2.status, 'cancelled')
 })
+
+test('HubRegistry: re-registration requires original secret and validates parameters', () => {
+  const registry = new HubRegistry()
+  const manifest = { appId: 'app.original', name: 'Original', secret: 'original-secret', tools: [{ toolId: 'run', name: 'Run', description: 'Run', riskLevel: 'read-only', inputSchema: { type: 'object', required: ['value'], properties: { value: { type: 'string', enum: ['yes'] } } } }] }
+  const original = registry.register(manifest)
+  assert.throws(() => registry.register({ ...manifest, secret: 'takeover-secret' }), /original secret/)
+  assert.equal(registry.get(manifest.appId), original)
+  assert.equal(registry.authenticate(manifest.appId, manifest.secret), original)
+  assert.throws(() => registry.validateTool(manifest.appId, 'run', []), /object/)
+  assert.throws(() => registry.validateTool(manifest.appId, 'run', { value: 'no' }), /enum/)
+  assert.throws(() => registry.validateTool(manifest.appId, 'missing', {}), /not available/)
+  assert.equal(registry.validateTool(manifest.appId, 'run', { value: 'yes' }).toolId, 'run')
+  const replacement = registry.register({ ...manifest, name: 'Reconnected' })
+  assert.notEqual(replacement, original)
+  assert.equal(replacement.registeredAt, original.registeredAt)
+})
+
+test('TaskManager: illegal transitions and all late terminal updates are inert', () => {
+  const tasks = new TaskManager()
+  let events = 0
+  tasks.onAny(() => events++)
+  for (const terminal of ['completed', 'failed', 'cancelled']) {
+    const task = tasks.create({ appId: 'app.terminal', toolId: 'run', parameters: {} })
+    assert.equal(tasks.complete(task.taskId, 'premature'), null)
+    assert.equal(tasks.updateProgress(task.taskId, { percentage: 1 }), null)
+    tasks.markAwaitingApproval(task.taskId)
+    assert.equal(tasks.transition(task.taskId, 'pending'), null)
+    tasks.markDispatched(task.taskId)
+    assert.equal(tasks.markDispatched(task.taskId), null)
+    if (terminal === 'completed') tasks.complete(task.taskId, 'final')
+    if (terminal === 'failed') tasks.fail(task.taskId, { code: 'FAIL', message: 'final' })
+    if (terminal === 'cancelled') tasks.cancel(task.taskId)
+    const snapshot = JSON.stringify(task)
+    const priorEvents = events
+    assert.equal(tasks.markAwaitingApproval(task.taskId), null)
+    assert.equal(tasks.markDispatched(task.taskId), null)
+    assert.equal(tasks.transition(task.taskId, 'paused'), null)
+    assert.equal(tasks.complete(task.taskId, 'late'), null)
+    assert.equal(tasks.fail(task.taskId, { code: 'LATE', message: 'late' }), null)
+    assert.equal(tasks.cancel(task.taskId), null)
+    assert.equal(tasks.updateProgress(task.taskId, { percentage: 99 }), null)
+    assert.equal(JSON.stringify(task), snapshot)
+    assert.equal(events, priorEvents)
+  }
+})

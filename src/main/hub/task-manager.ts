@@ -42,7 +42,11 @@ export class TaskManager {
         /* subscriber errors must not break the bus */
       }
     })
-    this.anyListener?.(event)
+    try {
+      this.anyListener?.(event)
+    } catch {
+      /* subscriber errors must not break lifecycle changes */
+    }
   }
 
   public create(input: {
@@ -92,6 +96,14 @@ export class TaskManager {
   public transition(taskId: string, status: TaskStatus): HubTask | null {
     const task = this.tasks.get(taskId)
     if (!task) return null
+    const allowed: Record<TaskStatus, TaskStatus[]> = {
+      pending: ['awaiting_approval', 'running', 'failed', 'cancelled'],
+      awaiting_approval: ['running', 'failed', 'cancelled'],
+      running: ['paused', 'completed', 'failed', 'cancelled'],
+      paused: ['running', 'completed', 'failed', 'cancelled'],
+      completed: [], failed: [], cancelled: [],
+    }
+    if (!allowed[task.status].includes(status)) return null
     task.status = status
     this.touch(task)
     if (['completed', 'failed', 'cancelled'].includes(status)) {
@@ -127,7 +139,7 @@ export class TaskManager {
 
   public updateProgress(taskId: string, progress: TaskProgress): HubTask | null {
     const task = this.tasks.get(taskId)
-    if (!task) return null
+    if (!task || !['running', 'paused'].includes(task.status)) return null
     task.progress = { ...(task.progress ?? {}), ...progress }
     this.touch(task)
     this.emit('task.progress', task.appId, { taskId, progress: task.progress })
@@ -135,9 +147,8 @@ export class TaskManager {
   }
 
   public complete(taskId: string, result: any): HubTask | null {
-    const task = this.tasks.get(taskId)
+    const task = this.transition(taskId, 'completed')
     if (!task) return null
-    task.status = 'completed'
     task.result = result
     task.error = undefined
     this.touch(task)
@@ -147,9 +158,8 @@ export class TaskManager {
   }
 
   public fail(taskId: string, error: { code: string; message: string }): HubTask | null {
-    const task = this.tasks.get(taskId)
+    const task = this.transition(taskId, 'failed')
     if (!task) return null
-    task.status = 'failed'
     task.error = error
     this.touch(task)
     task.completedAt = this.now()
@@ -158,10 +168,8 @@ export class TaskManager {
   }
 
   public cancel(taskId: string, reason = 'cancelled by user'): HubTask | null {
-    const task = this.tasks.get(taskId)
+    const task = this.transition(taskId, 'cancelled')
     if (!task) return null
-    if (['completed', 'failed', 'cancelled'].includes(task.status)) return task
-    task.status = 'cancelled'
     task.error = { code: 'CANCELLED', message: reason }
     this.touch(task)
     task.completedAt = this.now()

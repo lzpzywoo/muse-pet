@@ -183,6 +183,7 @@ export interface MuseHubEvent {
 }
 
 export interface MuseHubToolInfo {
+  inputSchema?: Record<string, unknown>
   toolId: string
   name: string
   description: string
