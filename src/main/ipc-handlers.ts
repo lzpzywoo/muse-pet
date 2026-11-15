@@ -13,6 +13,7 @@ import { SystemScreenApp, SYSTEM_SCREEN_APP_ID } from './hub/builtins/system-scr
 import { SystemSysApp, SYSTEM_SYS_APP_ID } from './hub/builtins/system-sys'
 import { SystemFilesApp, SYSTEM_FILES_APP_ID } from './hub/builtins/system-files'
 import type { HubEvent, LocalToolCall } from './hub/sdk-types'
+import { extractLocalToolCall } from './hub/local-tool-call'
 import type {
   ChatMessage,
   MusePlugin,
@@ -407,32 +408,6 @@ export function registerIpcHandlers(
     }
 
     return { promptForMuse: rawContent }
-  }
-
-  /** Detect and execute a `local_tool` instruction emitted by Luna. */
-  const extractLocalToolCall = (text: string): LocalToolCall | null => {
-    if (!text) return null
-    const fence = text.match(/```(?:json)?\s*\n([\s\S]*?)\n```/i)
-    const candidates = [fence?.[1], text]
-    for (const candidate of candidates) {
-      if (!candidate) continue
-      const match = candidate.match(/\{[^{}]*"action"\s*:\s*"local_tool"[^{}]*\}/i)
-      if (!match) continue
-      try {
-        const parsed = JSON.parse(match[0])
-        if (parsed.action === 'local_tool' && parsed.appId && parsed.toolId) {
-          return {
-            action: 'local_tool',
-            appId: String(parsed.appId),
-            toolId: String(parsed.toolId),
-            parameters: parsed.parameters && typeof parsed.parameters === 'object' ? parsed.parameters : {},
-          }
-        }
-      } catch {
-        /* keep looking */
-      }
-    }
-    return null
   }
 
   /**

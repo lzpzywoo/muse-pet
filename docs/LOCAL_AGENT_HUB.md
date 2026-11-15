@@ -137,6 +137,12 @@ Run this with `node my-app.js` while Muse Pet is open. In ChatWindow, type `/hub
 
 ## 🧠 Core Concepts
 
+### Read-only builtin file boundaries
+
+`system.files.search` and `system.files.read` share their implementation with desktop `/find` and `/read`. Access is limited to the current user's Desktop, Downloads and Documents known folders. Paths are checked after resolving symbolic links and junctions; traversal and targets outside those roots are rejected. Search returns at most 25 results with recursion depth 3. Directory excerpts contain at most 50 entries, and text excerpts at most 4000 characters. Files over 1 MiB and non-text files are rejected before returning content.
+
+Luna tool instructions use complete JSON objects, including nested `parameters`. `appId` and `toolId` must follow the manifest identifier rules; `parameters` must be an object (or omitted for an empty object). Only one instruction is selected per assistant response. Tool-shaped objects nested in another JSON object or array are treated as data.
+
 ### 1. App Manifest & Tool Definitions
 
 When your application boots, it describes its capabilities to the Hub:

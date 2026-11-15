@@ -53,8 +53,8 @@ export class SystemFilesApp {
 
   public async execute(toolId: string, params: Record<string, any> = {}): Promise<any> {
     if (toolId === 'search') {
-      const keyword = String(params.keyword ?? params.query ?? '').trim()
-      if (!keyword) throw new Error('缺少 keyword')
+      if (typeof params?.keyword !== 'string' || !params.keyword.trim()) throw new Error('缺少非空字符串 keyword')
+      const keyword = params.keyword.trim()
       const paths = this.secretary.searchLocalFiles(keyword)
       return {
         note: '只读搜索结果（桌面/下载/文档，有条数上限）。',
@@ -65,8 +65,8 @@ export class SystemFilesApp {
       }
     }
     if (toolId === 'read') {
-      const target = String(params.path ?? params.file ?? '').trim()
-      if (!target) throw new Error('缺少 path')
+      if (typeof params?.path !== 'string' || !params.path.trim()) throw new Error('缺少非空字符串 path')
+      const target = params.path.trim()
       const file = this.secretary.readLocalFileExcerpt(target)
       return {
         note: '只读文本摘要（可能被截断）。',

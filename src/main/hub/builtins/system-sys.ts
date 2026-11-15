@@ -27,11 +27,12 @@ export class SystemSysApp {
     ],
   }
 
-  public async execute(_toolId: string, _params: Record<string, any> = {}): Promise<{
+  public async execute(toolId: string, _params: Record<string, any> = {}): Promise<{
     note: string
     snapshot: string
     capturedAt: number
   }> {
+    if (toolId !== 'snapshot') throw new Error(`unknown tool ${toolId}`)
     const snapshot = await this.secretary.getSystemSnapshot()
     return {
       note: '这是用户电脑当前的只读系统快照，请基于数据回答，不要声称已执行任何修改。',

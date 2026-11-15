@@ -5,6 +5,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { pathToFileURL } from 'url'
+import { LocalFiles } from './local-files'
 import { MusePlugin, PendingSecretaryAction, SecretaryState } from '../types'
 
 const SECRETARY_PARTITION = 'persist:secretary_browser'
@@ -450,77 +451,20 @@ export class LocalSecretary {
     clipboard.writeText(text)
   }
 
+  private localFiles(): LocalFiles {
+    return new LocalFiles([
+      app.getPath('desktop'),
+      app.getPath('downloads'),
+      app.getPath('documents'),
+    ])
+  }
+
   public searchLocalFiles(keyword: string, customRoot?: string): string[] {
-    const home = os.homedir()
-    const roots = customRoot
-      ? [customRoot]
-      : [
-          path.join(home, 'Desktop'),
-          path.join(home, 'Downloads'),
-          path.join(home, 'Documents'),
-        ]
-
-    const matches: string[] = []
-    const lowerKey = keyword.trim().toLowerCase()
-
-    const walk = (dir: string, depth: number) => {
-      if (depth > 3 || matches.length >= 25) return
-      let entries: fs.Dirent[] = []
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true })
-      } catch {
-        return
-      }
-      for (const entry of entries) {
-        if (matches.length >= 25) break
-        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
-        const fullPath = path.join(dir, entry.name)
-        if (!lowerKey || entry.name.toLowerCase().includes(lowerKey)) {
-          matches.push(fullPath)
-        }
-        if (entry.isDirectory()) {
-          walk(fullPath, depth + 1)
-        }
-      }
-    }
-
-    for (const root of roots) {
-      if (fs.existsSync(root)) {
-        walk(root, 0)
-      }
-    }
-    return matches
+    return this.localFiles().searchLocalFiles(keyword, customRoot)
   }
 
   public readLocalFileExcerpt(targetPath: string, maxChars = 4000): { resolvedPath: string; content: string } {
-    let resolved = targetPath.trim().replace(/^["']|["']$/g, '')
-    if (!path.isAbsolute(resolved)) {
-      const desktopTry = path.join(os.homedir(), 'Desktop', resolved)
-      const downloadTry = path.join(os.homedir(), 'Downloads', resolved)
-      if (fs.existsSync(desktopTry)) {
-        resolved = desktopTry
-      } else if (fs.existsSync(downloadTry)) {
-        resolved = downloadTry
-      } else {
-        resolved = path.resolve(os.homedir(), resolved)
-      }
-    }
-
-    if (!fs.existsSync(resolved)) {
-      throw new Error(`找不到文件: ${resolved}`)
-    }
-    const stat = fs.statSync(resolved)
-    if (stat.isDirectory()) {
-      const items = fs.readdirSync(resolved).slice(0, 50)
-      return {
-        resolvedPath: resolved,
-        content: `[目录内容 (${items.length} 项)]:\n${items.join('\n')}`,
-      }
-    }
-
-    const raw = fs.readFileSync(resolved, 'utf-8')
-    const content = raw.length > maxChars ? `${raw.slice(0, maxChars)}\n...(已截断，共 ${raw.length} 字符)` : raw
-    return { resolvedPath: resolved, content }
+    return this.localFiles().readLocalFileExcerpt(targetPath, maxChars)
   }
 
   // ---------------------------------------------------------------------------
