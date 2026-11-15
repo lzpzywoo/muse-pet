@@ -15,7 +15,7 @@ export class SystemFilesApp {
     name: '本地文件（只读）',
     version: '1.0.0',
     description:
-      '在桌面、下载和文档目录中搜索文件名，或读取文本摘要。不写入、不删除、不打开任意盘符之外的范围。',
+      '仅在桌面、下载和文档目录中搜索文件名或读取文本摘要；不写入、不删除，不读取目录外的文件。',
     secret: 'muse-builtin-system-files',
     tools: [
       {

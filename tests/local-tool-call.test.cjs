@@ -23,6 +23,13 @@ test('fenced instructions are independent of unmatched punctuation in surroundin
   }
 })
 
+test('unfenced instructions survive prose inch marks without executing quoted JSON data', () => {
+  const value = { action: 'local_tool', appId: 'system.sys', toolId: 'snapshot' }
+  assert.deepEqual(extract('I will check your 27" monitor.\n' + JSON.stringify(value)), { ...value, parameters: {} })
+  assert.equal(extract(JSON.stringify(JSON.stringify(value))), null)
+  assert.equal(extract(JSON.stringify('example ' + JSON.stringify(value))), null)
+})
+
 test('braces, quotes and backslashes inside strings do not end the instruction', () => {
   const value = call({ path: 'a{b}.txt', text: 'quote " and slash \\ and }{' })
   assert.deepEqual(extract(JSON.stringify(value)), value)

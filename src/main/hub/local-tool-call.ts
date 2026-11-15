@@ -45,7 +45,9 @@ function scanJsonValues(text: string): LocalToolCall | null {
       continue
     }
     if (char === '"') {
-      quoted = true
+      // Prose inch marks are not JSON strings. Outside a container, only
+      // shield a quoted JSON container; escaped embedded JSON stays data.
+      quoted = stack.length > 0 || /^[ \t]*[\[{]/.test(text.slice(i + 1))
       continue
     }
     if (char === '{' || char === '[') {
