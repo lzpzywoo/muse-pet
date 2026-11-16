@@ -304,6 +304,8 @@ The WebSocket connection (`ws://127.0.0.1:19840/ws`) is a full-duplex communicat
 
 Use the same signed-in main conversation while Muse Pet stays running. On the phone, send `/hub tools` (or `/hub`) to request the current tool catalog and schemas, then ask Luna to use a listed tool. Read-only tools run without a gate; write tools requiring approval show a card on the Windows terminal.
 
+Desktop chat appends the tool catalog only for explicit discovery (such as `/hub tools`) or a deliberate local-software/tool request. Ordinary conversation and Muse outfit changes are sent without local capability context; generic words such as “help me” do not prepare a PowerShell prompt. Existing messages already sent to Muse are not retroactively edited.
+
 The background observer accepts only fresh, stable-ID instructions following a user request. The first loaded history is a baseline; restart, old history, quoted instructions and replies to tool results do not execute work again. Desktop requests use the same route, including requests carrying the injected tool catalog.
 
 Final results are attributed to their task and sent as local data, with bounded text and separate PNG/JPEG attachments for both screen tools. Results stay bound to the original account and conversation. Delivery is serialized; definite preflight failures can wait for a later healthy observation, while uncertain submissions are never automatically resent. The local terminal reports queued or uncertain delivery. Live phone-to-Muse validation has not yet been performed; automated tests cover the bridge and mocked Electron integration.

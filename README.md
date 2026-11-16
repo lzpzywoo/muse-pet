@@ -54,6 +54,7 @@ Instead of a static sticker or an intrusive rectangular widget, Muse Pet extract
 
 ### 5. 🔌 Local Agent Hub & Unified Integration API (`/hub`)
 - **Extensible Local Tool Discovery**: Built-in HTTP REST (`http://127.0.0.1:19840`) and WebSocket server (`/ws`) allowing any third-party software, background daemon, or Python/Node script to register capabilities with Muse Pet.
+- **Context Only When Needed**: Ordinary chat and Muse outfit changes pass through unchanged. The local tool catalog is attached only for explicit discovery or a deliberate local-software request; generic “help me” does not trigger a PowerShell prompt.
 - **Cross-Device Natural Language Dispatch**: Ask Luna on your mobile phone or desktop in casual language (e.g., *"How is my computer running?"*, *"Did my download finish?"*, *"Start rendering"*); Luna queries the registered local tools and replies in natural language.
 - **P1 Built-in Screen Vision (`system.screen`)**: Provides instant, clean desktop screen captures without self-window occlusion so Luna can visually inspect progress bars, queue statuses, or game lobbies.
 - **3-Tier Permission Hierarchy**: Enforces `read-only` (instant pass), `write-safe` (trust toggleable), and `write-dangerous` (mandatory desktop terminal approval). External apps cannot approve their own tasks; HTTP and WebSocket updates are scoped to the owning app. Cancellation ends approval waits and terminal task states cannot be overwritten.

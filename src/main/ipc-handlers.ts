@@ -16,6 +16,7 @@ import type { HubEvent, LocalToolCall } from './hub/sdk-types'
 import { HubConversationBridge, type HubConversationDelivery, type HubConversationLedger } from './hub/conversation-bridge'
 import { isPcReportNotSubmitted } from './pc-status-bridge'
 import { waitForHubResult } from './hub/task-result'
+import { isAvatarAppearanceRequest, isLocalWriteRequest, shouldIncludeHubTools } from './local-request-intent'
 import type {
   ChatMessage,
   MusePlugin,
@@ -340,6 +341,8 @@ export function registerIpcHandlers(
   }> => {
     const trimmed = rawContent.trim()
 
+    if (isAvatarAppearanceRequest(trimmed)) return { promptForMuse: rawContent }
+
     // 0. Reset UI / Plugins (`/reset-ui` or natural language asking to restore default UI)
     if (
       /^\/reset-ui(\s+|$)/i.test(trimmed) ||
@@ -485,11 +488,7 @@ export function registerIpcHandlers(
 
 
     // 12. Mutating / Write / Shell operations in natural language -> ask Luna to output a ```powershell``` block so we can gate it with an approval card
-    const isWriteIntent =
-      !trimmed.startsWith('/') &&
-      /(帮我|在本地|替我|执行|运行|清理|杀掉|结束进程|关闭端口|整理桌面|新建文件|移动文件|删除|修改配置|写一段.*脚本)/i.test(
-        trimmed
-      )
+    const isWriteIntent = isLocalWriteRequest(trimmed)
 
     if (isWriteIntent) {
       return {
@@ -500,7 +499,9 @@ export function registerIpcHandlers(
     }
 
     // 13. Muse Local Agent Hub — expose integrated third-party capabilities to Luna
-    const hubTools = hub.describeToolsForLuna()
+    const hubTools = shouldIncludeHubTools(trimmed, hub.registry.listOnline().map(app => app.manifest))
+      ? hub.describeToolsForLuna()
+      : ''
     if (hubTools) {
       return {
         promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_TOOLS]\n${hubTools}\n只有当用户明确需要操作或查询这些本地软件时才调用；否则忽略本段。\n[/MUSE_LOCAL_TOOLS]`,

@@ -19,6 +19,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { pathToFileURL } from 'url'
 import { SessionStore } from './session-store'
+import { readAvatarSource } from './avatar-source'
 import { pcAccount, PcReportNotSubmitted, type PcObservation } from './pc-status-bridge'
 import type {
   AvatarAssets,
@@ -107,7 +108,9 @@ export class MuseClient {
   private cloudBrowserWindow: BrowserWindow | null = null
   private aborted = false
   private activeRunId = 0
-  private avatarSyncing = false
+  private avatarSyncPromise: Promise<AvatarAssets | null> | null = null
+  private avatarCachePruned = false
+  private lastAvatarAccount: string | null = null
   private lastAvatarSignature: string | null = null
   private onAvatarSyncedCallbacks: Array<(assets: AvatarAssets) => void> = []
   private onCloudMessagesCallbacks: Array<(messages: ChatMessage[], newAssistantMessage?: ChatMessage) => void> = []
@@ -533,64 +536,17 @@ export class MuseClient {
             }
           }
 
-          // Inspect live stage avatar signature to detect outfit / avatar changes immediately
-          const allAvatarVids = Array.from(document.querySelectorAll('video[data-hatch-avatar-layer]'))
-          const stageVid =
-            allAvatarVids.find(v => !v.closest('[data-message-item="true"]')) || allAvatarVids[0] || null
-          let avatarSignature = null
-          if (stageVid) {
-            const fk = Object.keys(stageVid).find(k => k.startsWith('__reactFiber'))
-            let cur = fk ? stageVid[fk] : null
-            let staticBlob = ''
-            let defaultBlob = stageVid.src || ''
-            let workingBlob = ''
-            while (cur) {
-              let s = cur.memoizedState
-              while (s) {
-                const ms = s.memoizedState
-                if (ms && typeof ms === 'object') {
-                  const val = (ms.current && ms.current.value !== undefined) ? ms.current.value : ms
-                  if (typeof val === 'string' && val.startsWith('blob:') && !staticBlob) {
-                    staticBlob = val
-                  } else if (val && typeof val === 'object' && val.default && String(val.default).startsWith('blob:')) {
-                    defaultBlob = String(val.default || defaultBlob)
-                    workingBlob = String(val.working || '')
-                  }
-                }
-                s = s.next
-              }
-              cur = cur.return
-            }
-            const statusSurface = document.querySelector('[data-testid="hatch-status-panel-sliding-surface"]')
-            const surfaceName = statusSurface?.innerText?.split('\\n')?.[0]?.trim() || ''
-            avatarSignature = [surfaceName, staticBlob, defaultBlob, workingBlob].join('|')
-          }
+          const avatarSignature = (${readAvatarSource.toString()})(document)?.avatarSignature || null
 
           return { items, avatarSignature }
         })()
       `)
 
-      if (payload?.avatarSignature) {
-        if (this.lastAvatarSignature !== payload.avatarSignature) {
-          const prevSig = this.lastAvatarSignature
-          this.lastAvatarSignature = payload.avatarSignature
-          if (prevSig !== null || !this.getCachedAvatarAssets()) {
-            this.syncAvatarAssets(true).catch(() => {})
-          } else {
-            // Even on first check, verify whether cached meta matches live signature
-            try {
-              const metaPath = path.join(this.getAvatarCacheDir(), 'meta.json')
-              const meta = fs.existsSync(metaPath)
-                ? JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
-                : null
-              if (!meta || meta.avatarSignature !== payload.avatarSignature) {
-                this.syncAvatarAssets(true).catch(() => {})
-              }
-            } catch {
-              this.syncAvatarAssets(true).catch(() => {})
-            }
-          }
-        }
+      if (cookies !== this.sessionStore.getCookies()) return []
+      // Only a published snapshot acknowledges a signature. A failed sync retries next poll.
+      if (payload?.avatarSignature &&
+          (this.lastAvatarSignature !== payload.avatarSignature || this.lastAvatarAccount !== cookies)) {
+        this.syncAvatarAssets(true).catch(() => {})
       }
 
       const items = payload?.items || []
@@ -658,16 +614,37 @@ export class MuseClient {
     return dir
   }
 
+  private pruneAvatarSnapshots(dir: string, keep?: string): void {
+    if (this.avatarCachePruned) return
+    // Run before this process issues any cache URLs; active URLs stay valid until restart.
+    this.avatarCachePruned = true
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory() && entry.name !== keep && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(entry.name)) {
+          fs.rmSync(path.join(dir, entry.name), { recursive: true, force: true })
+        }
+      }
+    } catch (error) { console.warn('Avatar snapshot cleanup failed:', error) }
+  }
+
   public getCachedAvatarAssets(): AvatarAssets | null {
     try {
       const dir = this.getAvatarCacheDir()
       const metaPath = path.join(dir, 'meta.json')
-      if (!fs.existsSync(metaPath)) return null
+      if (!fs.existsSync(metaPath)) {
+        this.pruneAvatarSnapshots(dir)
+        return null
+      }
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
-      const staticPath = path.join(dir, 'avatar.webp')
-      const defaultPath = path.join(dir, 'default.mp4')
-      const workingPath = path.join(dir, 'working.mp4')
-      const resumePath = path.join(dir, 'resume.mp4')
+      this.pruneAvatarSnapshots(dir, meta.snapshot)
+      // Legacy caches live in dir; new snapshots publish all files with one metadata rename.
+      if (meta.snapshot && !/^[a-z0-9-]+$/.test(meta.snapshot)) return null
+      const snapshotDir = meta.snapshot ? path.join(dir, meta.snapshot) : dir
+      const staticPath = path.join(snapshotDir, 'avatar.webp')
+      const defaultPath = path.join(snapshotDir, 'default.mp4')
+      const workingPath = path.join(snapshotDir, 'working.mp4')
+      const resumePath = path.join(snapshotDir, 'resume.mp4')
+      if (meta.snapshot && ![defaultPath, workingPath, resumePath].every(p => fs.existsSync(p))) return null
 
       const ts = meta.updatedAt || Date.now()
       const toUrl = (p: string) => (fs.existsSync(p) ? `${pathToFileURL(p).href}?v=${ts}` : undefined)
@@ -833,15 +810,25 @@ export class MuseClient {
     }
   }
 
-  public async syncAvatarAssets(force = false): Promise<AvatarAssets | null> {
-    const cookies = this.sessionStore.getCookies()
-    if (!cookies) return this.getCachedAvatarAssets()
-    if (this.avatarSyncing && !force) return this.getCachedAvatarAssets()
+  public syncAvatarAssets(force = false): Promise<AvatarAssets | null> {
+    // Force requests also join the active extraction; an older result can never win a race.
+    if (this.avatarSyncPromise) return this.avatarSyncPromise
+    this.avatarSyncPromise = this.performAvatarSync(force).finally(() => {
+      this.avatarSyncPromise = null
+    })
+    return this.avatarSyncPromise
+  }
 
-    this.avatarSyncing = true
+  private async performAvatarSync(_force: boolean): Promise<AvatarAssets | null> {
+    const cookies = this.sessionStore.getCookies()
+    if (!cookies || !this.sessionStore.getProfile().isLoggedIn) return this.getCachedAvatarAssets()
+    const isCurrentSession = () => cookies === this.sessionStore.getCookies() &&
+      this.sessionStore.getProfile().isLoggedIn
+    let stagedDir: string | undefined
+    let stagedMeta: string | undefined
     try {
       const win = await this.ensureMuseWindow(cookies)
-
+      if (!isCurrentSession()) return this.getCachedAvatarAssets()
       const extracted: {
         ok: boolean
         agentName?: string
@@ -852,149 +839,109 @@ export class MuseClient {
         resumeB64?: string
       } = await win.webContents.executeJavaScript(`
         (async function() {
+          const readSource = ${readAvatarSource.toString()}
           const start = Date.now()
-          let videoEl = null
-          while (Date.now() - start < 20000) {
-            const allVids = Array.from(document.querySelectorAll('video[data-hatch-avatar-layer]'))
-            videoEl = allVids.find(v => !v.closest('[data-message-item="true"]')) || allVids[0] || null
-            if (videoEl && videoEl.src && videoEl.src.startsWith('blob:')) break
+          let source = readSource(document)
+          while (!source && Date.now() - start < 20000) {
             await new Promise(r => setTimeout(r, 300))
+            source = readSource(document)
           }
-          if (!videoEl || !videoEl.src) return { ok: false }
-
-          const fiberKey = Object.keys(videoEl).find(k => k.startsWith('__reactFiber'))
-          let cur = fiberKey ? videoEl[fiberKey] : null
-          let staticBlob = null
-          let videoMap = {}
-          while (cur) {
-            let s = cur.memoizedState
-            while (s) {
-              const ms = s.memoizedState
-              if (ms && typeof ms === 'object') {
-                const val = (ms.current && ms.current.value !== undefined) ? ms.current.value : ms
-                if (typeof val === 'string' && val.startsWith('blob:')) {
-                  if (!staticBlob) staticBlob = val
-                } else if (val && typeof val === 'object' && val.default && String(val.default).startsWith('blob:')) {
-                  videoMap = val
-                }
-              }
-              s = s.next
-            }
-            cur = cur.return
-          }
-
-          const blobToBase64 = async (url) => {
-            if (!url) return null
-            try {
+          if (!source) return { ok: false }
+          const media = new Map()
+          const toDataUrl = (url) => {
+            if (!media.has(url)) media.set(url, (async () => {
               const res = await fetch(url)
+              if (!res.ok) throw new Error('Avatar media fetch failed')
               const blob = await res.blob()
-              return await new Promise((resolve) => {
+              if (!blob.size) throw new Error('Empty avatar media')
+              return await new Promise((resolve, reject) => {
                 const reader = new FileReader()
-                reader.onloadend = () => resolve(reader.result)
-                reader.onerror = () => resolve(null)
+                reader.onload = () => resolve(reader.result)
+                reader.onerror = () => reject(new Error('Avatar media read failed'))
+                reader.onabort = () => reject(new Error('Avatar media read aborted'))
                 reader.readAsDataURL(blob)
               })
-            } catch {
-              return null
-            }
+            })())
+            return media.get(url)
           }
-
-          const defaultUrl = videoMap.default || videoEl.src
-          const workingUrl = videoMap.working || defaultUrl
-          const resumeUrl = videoMap.resume || defaultUrl
-
-          const [staticB64, defaultB64, workingB64, resumeB64] = await Promise.all([
-            blobToBase64(staticBlob),
-            blobToBase64(defaultUrl),
-            workingUrl !== defaultUrl ? blobToBase64(workingUrl) : Promise.resolve(null),
-            resumeUrl !== defaultUrl ? blobToBase64(resumeUrl) : Promise.resolve(null),
-          ])
-
-          const statusSurface = document.querySelector('[data-testid="hatch-status-panel-sliding-surface"]')
-          const surfaceName = statusSurface?.innerText?.split('\\n')?.[0]?.trim()
-          const rawTitle = (document.title || '').replace(/^Chat\\s*[—-]\\s*/i, '').trim()
-          const agentName =
-            surfaceName ||
-            (rawTitle && !rawTitle.toLowerCase().includes('muse') ? rawTitle : '') ||
-            'Muse'
-          const avatarSignature = [surfaceName || '', staticBlob || '', defaultUrl || '', workingUrl || ''].join('|')
-
-          return {
-            ok: true,
-            agentName,
-            avatarSignature,
-            staticB64,
-            defaultB64,
-            workingB64: workingB64 || defaultB64,
-            resumeB64: resumeB64 || defaultB64,
+          try {
+            const [staticB64, defaultB64, workingB64, resumeB64] = await Promise.all([
+              source.staticUrl ? toDataUrl(source.staticUrl) : Promise.resolve(null),
+              toDataUrl(source.defaultUrl), toDataUrl(source.workingUrl), toDataUrl(source.resumeUrl),
+            ])
+            // Reject a bundle if the outfit changed while its blobs were being read.
+            if (readSource(document)?.avatarSignature !== source.avatarSignature) return { ok: false }
+            return { ok: true, agentName: source.agentName, avatarSignature: source.avatarSignature,
+              staticB64, defaultB64, workingB64, resumeB64 }
+          } catch {
+            return { ok: false }
           }
         })()
       `)
 
-      if (!extracted || !extracted.ok || !extracted.defaultB64) {
+      if (!isCurrentSession() || !extracted?.ok || !extracted.avatarSignature ||
+          !extracted.defaultB64 || !extracted.workingB64 || !extracted.resumeB64) {
         return this.getCachedAvatarAssets()
       }
 
-      if (extracted.avatarSignature) {
-        this.lastAvatarSignature = extracted.avatarSignature
-      }
-
       const dir = this.getAvatarCacheDir()
-      const writeDataUrl = (filePath: string, dataUrl?: string) => {
-        if (!dataUrl) return
-        const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl
-        fs.writeFileSync(filePath, Buffer.from(base64, 'base64'))
-      }
-
-      if (extracted.staticB64) {
-        writeDataUrl(path.join(dir, 'avatar.webp'), extracted.staticB64)
-      }
-      writeDataUrl(path.join(dir, 'default.mp4'), extracted.defaultB64)
-      if (extracted.workingB64) {
-        writeDataUrl(path.join(dir, 'working.mp4'), extracted.workingB64)
-      }
-      if (extracted.resumeB64) {
-        writeDataUrl(path.join(dir, 'resume.mp4'), extracted.resumeB64)
-      }
-
-      const updatedAt = Date.now()
-      fs.writeFileSync(
-        path.join(dir, 'meta.json'),
-        JSON.stringify(
-          {
-            agentName: extracted.agentName || 'Muse',
-            avatarSignature: extracted.avatarSignature || undefined,
-            staticDataUrl: extracted.staticB64 || undefined,
-            updatedAt,
-          },
-          null,
-          2
-        ),
-        'utf-8'
-      )
-
-      // Update SessionStore profile with agentName and avatarUrl
-      const curProfile = this.sessionStore.getProfile()
-      if (curProfile.isLoggedIn) {
-        this.sessionStore.save(this.sessionStore.getCookies(), {
-          ...curProfile,
-          agentName: extracted.agentName || curProfile.agentName || 'Muse',
-          avatarUrl: extracted.staticB64 || curProfile.avatarUrl,
+      const mediaHash = crypto.createHash('sha256')
+        .update(JSON.stringify([extracted.staticB64, extracted.defaultB64, extracted.workingB64, extracted.resumeB64])).digest('hex')
+      const publishAssets = () => {
+        const curProfile = this.sessionStore.getProfile()
+        this.sessionStore.save(cookies, {
+          ...curProfile, agentName: extracted.agentName || curProfile.agentName || 'Muse',
+          avatarUrl: extracted.staticB64 || undefined,
         })
+        const assets = this.getCachedAvatarAssets()
+        if (assets) {
+          for (const cb of this.onAvatarSyncedCallbacks) cb(assets)
+          this.lastAvatarSignature = extracted.avatarSignature!
+          this.lastAvatarAccount = cookies
+        }
+        return assets
       }
-
-      const assets = this.getCachedAvatarAssets()
-      if (assets) {
-        for (const cb of this.onAvatarSyncedCallbacks) {
-          cb(assets)
+      const cached = this.getCachedAvatarAssets()
+      if (cached) {
+        const meta = JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf-8'))
+        if (meta.avatarSignature === extracted.avatarSignature && meta.mediaHash === mediaHash && meta.account === pcAccount(cookies)) {
+          if (this.lastAvatarSignature !== extracted.avatarSignature || this.lastAvatarAccount !== cookies) return publishAssets()
+          return cached
         }
       }
-      return assets
+      const snapshot = crypto.randomUUID()
+      stagedDir = path.join(dir, snapshot)
+      fs.mkdirSync(stagedDir)
+      const writeDataUrl = (filename: string, dataUrl: string) => {
+        const match = /^data:[^,]*;base64,([a-z0-9+/=\s]+)$/i.exec(dataUrl)
+        if (!match) throw new Error('Invalid avatar media data')
+        const data = Buffer.from(match[1], 'base64')
+        if (!data.length) throw new Error('Empty avatar media data')
+        fs.writeFileSync(path.join(stagedDir!, filename), data)
+      }
+      if (extracted.staticB64) writeDataUrl('avatar.webp', extracted.staticB64)
+      writeDataUrl('default.mp4', extracted.defaultB64)
+      writeDataUrl('working.mp4', extracted.workingB64)
+      writeDataUrl('resume.mp4', extracted.resumeB64)
+
+      const updatedAt = Date.now()
+      stagedMeta = path.join(dir, `${snapshot}.json`)
+      fs.writeFileSync(stagedMeta, JSON.stringify({
+        snapshot, agentName: extracted.agentName || 'Muse',
+        avatarSignature: extracted.avatarSignature, mediaHash, account: pcAccount(cookies),
+        staticDataUrl: extracted.staticB64 || undefined, updatedAt,
+      }), 'utf-8')
+      if (!isCurrentSession()) return this.getCachedAvatarAssets()
+      fs.renameSync(stagedMeta, path.join(dir, 'meta.json'))
+      stagedMeta = undefined
+      stagedDir = undefined // Published files remain available to existing renderer URLs.
+      return publishAssets()
     } catch (err) {
       console.error('syncAvatarAssets error:', err)
       return this.getCachedAvatarAssets()
     } finally {
-      this.avatarSyncing = false
+      if (stagedMeta) fs.rmSync(stagedMeta, { force: true })
+      if (stagedDir) fs.rmSync(stagedDir, { recursive: true, force: true })
     }
   }
 

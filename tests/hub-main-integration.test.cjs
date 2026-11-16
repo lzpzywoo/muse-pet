@@ -99,8 +99,10 @@ test('actual IPC registration connects phone observations, tracked builtins and 
     constructor(options) { super({ ...options, port: 0 }); activeHub = this }
     start() { return (this.started = super.start()) }
   }
+  let pluginCalls = 0
   class Secretary {
     init() {}
+    synthesizePluginFromRequest() { pluginCalls++; return { name: 'fake', category: 'theme', description: 'fake' } }
     onStateUpdated() {}
     onActionUpdated(callback) { this.updated = callback }
     async getSystemSnapshot() { return 'actual CPU snapshot' }
@@ -115,7 +117,7 @@ test('actual IPC registration connects phone observations, tracked builtins and 
       const changed = { ...action, status, output }; this.actions.set(id, changed); this.updated(changed); return changed
     }
   }
-  const sends = [], events = []
+  const sends = [], events = [], outgoing = []
   let observer, cloudUpdate
   const cloudHistory = [{ id: 'cloud-user', role: 'user', content: 'Use my tool', timestamp: Date.now() }]
   const muse = {
@@ -124,10 +126,12 @@ test('actual IPC registration connects phone observations, tracked builtins and 
     fetchCloudMessages: async () => cloudHistory,
     syncAvatarAssets: async () => {},
     pcAvailable: () => true,
+    refreshToolObservation: async () => {},
+    sendChatMessage: async text => { outgoing.push(text) },
     sendHubReport: async (...args) => { sends.push(args) },
   }
   const chat = { isDestroyed: () => false, webContents: { send: (name, payload) => events.push([name, payload]) } }
-  const windows = { getChatWindow: () => chat, getPetWindow: () => null }
+  const windows = { getChatWindow: () => chat, getPetWindow: () => null, setAvatarState: () => {} }
   const { registerIpcHandlers } = load('src/main/ipc-handlers.ts', {
     electron: { app, ipcMain }, './hub/hub-server': { HubServer: TestHub, HUB_PORT: 19840 },
     './local-secretary': { LocalSecretary: Secretary },
@@ -135,6 +139,13 @@ test('actual IPC registration connects phone observations, tracked builtins and 
   t.after(() => { activeHub?.stop(); fs.rmSync(temp, { recursive: true, force: true }) })
   registerIpcHandlers(windows, muse, { getCookies: () => 'hatch_sess=test', getProfile: () => ({ isLoggedIn: true }) }, {})
   await activeHub.started
+  for (const text of ['yoho. fish fish , 换一件万圣节的衣服吧', '帮我换一件万圣节的衣服吧', '帮我换个桌宠的造型', '帮我写一首诗', 'hello fish fish']) {
+    await handlers.get('chat:send-message')({}, text)
+    assert.equal(outgoing.at(-1), text, 'ordinary chat must reach Muse unchanged')
+  }
+  assert.equal(pluginCalls, 0, 'Muse outfit changes are not local CSS/plugin requests')
+  await handlers.get('chat:send-message')({}, '/hub tools')
+  assert.match(outgoing.at(-1), /\[MUSE_LOCAL_TOOLS\]/)
   const account = pcAccount('hatch_sess=test')
   const base = { account, conversation: 'https://muse.ai/', epoch: 'page', ready: true }
   await observer({ ...base, messages: [{ id: 'old', role: 'user', content: 'Hello' }] })
