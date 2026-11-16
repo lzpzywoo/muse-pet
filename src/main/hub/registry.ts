@@ -1,4 +1,5 @@
 import { validateToolParameters } from './input-schema'
+import { validateSoftwareExploration } from './software-exploration'
 import { randomBytes, createHash } from 'node:crypto'
 import type { AppManifest, RegisteredApp, ToolDefinition, RiskLevel } from './sdk-types'
 
@@ -35,6 +36,7 @@ export class HubRegistry {
       throw new Error(validation.error)
     }
 
+    validateSoftwareExploration(manifest)
     const appId = manifest.appId
     if (this.secrets.has(appId) && this.secrets.get(appId) !== manifest.secret) {
       throw new Error('existing app requires its original secret')

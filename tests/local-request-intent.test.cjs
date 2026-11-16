@@ -5,7 +5,7 @@ const Module = require('node:module')
 const file = 'src/main/local-request-intent.ts'
 const mod = new Module(file)
 mod._compile(buildSync({ entryPoints: [file], bundle: true, format: 'cjs', platform: 'node', write: false }).outputFiles[0].text, file + '.cjs')
-const { isAvatarAppearanceRequest: avatar, isLocalWriteRequest: write, shouldIncludeHubTools: hub } = mod.exports
+const { isAvatarAppearanceRequest: avatar, isLocalWriteRequest: write, shouldIncludeHubTools: hub, selectHubIntentAppIds: select } = mod.exports
 const apps = [{ appId: 'com.demo.downloader', name: 'Demo Downloader', tools: [{ name: '查看下载队列' }] }]
 
 test('ordinary chat and Muse outfit requests do not opt into local context', () => {
@@ -41,6 +41,17 @@ test('third-party app keywords, descriptions and compound tool names trigger hub
   // Non-action mention of description word does not trigger
   assert.equal(hub('ThinkRail 是个不错的开源工具', appList), false)
 })
+test('software understanding selects only the requested app, without broad single-word tool matches', () => {
+  const apps = [
+    { appId: 'com.thinkrail.agent', name: 'ThinkRail', description: 'coding workspace', keywords: ['thinkrail'], tools: [{ toolId: 'software_overview', name: '软件概览' }] },
+    { appId: 'system.files', name: '本地文件', tools: [{ toolId: 'read', name: '读取文件' }, { toolId: 'search', name: '搜索文件' }] },
+  ]
+  assert.deepEqual(select('ThinkRail 目前在忙什么', apps), ['com.thinkrail.agent'])
+  assert.deepEqual(select('what is ThinkRail working on?', apps), ['com.thinkrail.agent'])
+  for (const text of ['I already finished dinner', 'read a story about fish', 'search for Halloween costume ideas']) assert.deepEqual(select(text, apps), [], text)
+  assert.deepEqual(select('/hub tools', apps), ['com.thinkrail.agent', 'system.files'])
+})
+
 test('local script preparation requires an operation and a concrete local target', () => {
   for (const text of ['运行 PowerShell 命令', '帮我删除本地文件', '替我移动文件到下载目录', '整理桌面', '关闭端口3000', '结束进程', 'run this script']) assert.equal(write(text), true, text)
   assert.equal(avatar('修改本地文件里的形象描述'), false)

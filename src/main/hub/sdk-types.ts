@@ -21,6 +21,14 @@ export interface ToolDefinition {
   requiresApproval?: boolean
 }
 
+/** Read-only entry points for the muse-software/1 exploration protocol. */
+export interface SoftwareExplorationDescriptor {
+  version: 1
+  overviewToolId: string
+  discoverToolId: string
+  readToolId: string
+}
+
 /** Manifest submitted by an application when it registers with the hub. */
 export interface AppManifest {
   appId: string
@@ -31,6 +39,7 @@ export interface AppManifest {
   secret: string
   keywords?: string[]
   tools: ToolDefinition[]
+  exploration?: SoftwareExplorationDescriptor
 }
 
 /** A registered application, including runtime state owned by the hub. */

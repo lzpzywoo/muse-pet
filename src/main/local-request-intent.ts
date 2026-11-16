@@ -52,7 +52,9 @@ function extractKeywords(app: HubIntentApp): string[] {
   const corpus = `${app.appId || ''} ${app.description || ''} ${(app.tools || []).map(t => `${t.toolId || ''} ${t.description || ''}`).join(' ')}`
   const englishTokens = corpus.toLowerCase().match(/[a-z0-9_-]{3,}/g) || []
   for (const token of englishTokens) {
-    if (!['and', 'the', 'for', 'with', 'from', 'all', 'true', 'false', 'type', 'object', 'string', 'number'].includes(token) && !list.includes(token)) {
+    if (!['and', 'the', 'for', 'with', 'from', 'all', 'true', 'false', 'type', 'object', 'string', 'number',
+      'read', 'search', 'query', 'get', 'set', 'list', 'run', 'execute', 'create', 'update', 'delete', 'write',
+      'open', 'close', 'stop', 'start', 'app', 'tool', 'tools', 'software', 'local', 'system', 'files'].includes(token) && !list.includes(token)) {
       list.push(token)
     }
   }
@@ -68,12 +70,16 @@ export function shouldIncludeHubTools(content: string, apps: HubIntentApp[]): bo
     return true
   }
   if (!text || text.startsWith('/') || isAvatarAppearanceRequest(text)) return false
-  const asksForAction = /(?:查看|看看|检查|查询|搜索|读取|调用|使用|运行|执行|列出|打开|启动|停止|进度|状态|怎么样|\b(?:check|query|search|read|use|run|list|open|start|stop|status|progress)\b)/i.test(text)
+  const asksForAction = /(?:查看|看看|检查|查询|搜索|读取|调用|使用|运行|执行|列出|打开|启动|停止|进度|状态|怎么样|在忙什么|在做什么|在干什么|是做什么|是干什么|当前任务|目前任务|\b(?:check|query|search|read|use|run|list|open|start|stop|status|progress)\b|\bwhat\b.*\b(?:doing|working|running)\b)/i.test(text)
   const lower = text.toLowerCase()
-  if (apps.some(app => app.appId && lower.includes(app.appId.toLowerCase()))) return true
-  if (apps.some(app => (app.tools || []).some(t => t.toolId && lower.includes(t.toolId.toLowerCase())))) return true
+  if (apps.some(app => app.appId && mentionsLabel(lower, app.appId))) return true
+  if (apps.some(app => (app.tools || []).some(t => t.toolId && /[_-]/.test(t.toolId) && mentionsLabel(lower, t.toolId)))) return true
   if (!asksForAction) return false
   if (apps.some(app => extractKeywords(app).some(kw => mentionsLabel(lower, kw)))) return true
   return /(本地|这台电脑|我的电脑|已接入|\blocal\b|\bmy (?:pc|computer)\b)/i.test(text) &&
     /(工具|软件|应用|文件|下载|渲染|构建|编译|\b(?:tool|app|software|file|download|render|build)\b)/i.test(text)
+}
+
+export function selectHubIntentAppIds(content: string, apps: HubIntentApp[]): string[] {
+  return apps.filter(app => shouldIncludeHubTools(content, [app])).map(app => app.appId)
 }

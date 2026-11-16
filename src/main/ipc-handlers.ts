@@ -16,7 +16,8 @@ import type { HubEvent, LocalToolCall } from './hub/sdk-types'
 import { HubConversationBridge, type HubConversationDelivery, type HubConversationLedger } from './hub/conversation-bridge'
 import { isPcReportNotSubmitted } from './pc-status-bridge'
 import { waitForHubResult } from './hub/task-result'
-import { isAvatarAppearanceRequest, isLocalWriteRequest, shouldIncludeHubTools } from './local-request-intent'
+import { isAvatarAppearanceRequest, isLocalWriteRequest, selectHubIntentAppIds } from './local-request-intent'
+import { getSoftwareExplorationPolicy } from './hub/software-exploration'
 import type {
   ChatMessage,
   MusePlugin,
@@ -249,6 +250,11 @@ export function registerIpcHandlers(
       fs.renameSync(hubLedgerPath + '.tmp', hubLedgerPath)
     },
     account: () => pcAccount(sessionStore.getCookies()),
+    exploration: appId => {
+      const app = hub.registry.get(appId)
+      return app?.online ? getSoftwareExplorationPolicy(app.manifest) : undefined
+    },
+    cancelTask: (taskId, reason) => { hub.cancelTask(taskId, reason) },
     dispatch: async (call, context) => {
       if (context.account !== pcAccount(sessionStore.getCookies())) throw new Error('账号已切换')
       if (call.appId === 'hub.catalog' && call.toolId === 'list') {
@@ -504,9 +510,8 @@ export function registerIpcHandlers(
     }
 
     // 13. Muse Local Agent Hub — expose integrated third-party capabilities to Luna
-    const hubTools = shouldIncludeHubTools(trimmed, hub.registry.listOnline().map(app => app.manifest))
-      ? hub.describeToolsForLuna()
-      : ''
+    const selectedApps = selectHubIntentAppIds(trimmed, hub.registry.listOnline().map(app => app.manifest))
+    const hubTools = selectedApps.length ? hub.describeToolsForLuna(selectedApps) : ''
     if (hubTools) {
       return {
         promptForMuse: `${rawContent}\n\n[MUSE_LOCAL_TOOLS]\n${hubTools}\n只有当用户明确需要操作或查询这些本地软件时才调用；否则忽略本段。\n[/MUSE_LOCAL_TOOLS]`,

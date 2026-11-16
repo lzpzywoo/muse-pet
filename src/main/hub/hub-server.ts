@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { HubRegistry } from './registry'
+import { getSoftwareExplorationPolicy } from './software-exploration'
 import { HubAuth } from './auth'
 import { TaskManager } from './task-manager'
 import { HubEventBus } from './event-bus'
@@ -386,7 +387,14 @@ export class HubServer {
   }
 
   private publicApp(app: RegisteredApp) {
+    const policy = getSoftwareExplorationPolicy(app.manifest)
     return {
+      ...(policy ? { exploration: {
+        version: policy.version,
+        overviewToolId: policy.overviewToolId,
+        discoverToolId: policy.discoverToolId,
+        readToolId: policy.readToolId,
+      } } : {}),
       appId: app.manifest.appId,
       name: app.manifest.name,
       version: app.manifest.version,
@@ -640,27 +648,36 @@ export class HubServer {
   }
 
   /** Human-readable capability list injected into Luna's context. */
-  public describeToolsForLuna(): string {
-    const tools = this.registry.allTools()
+  public describeToolsForLuna(appIds?: string[]): string {
+    const allowed = appIds === undefined ? undefined : new Set(appIds)
+    const policies = new Map(this.registry.listOnline()
+      .filter(app => !allowed || allowed.has(app.manifest.appId))
+      .map(app => [app.manifest.appId, getSoftwareExplorationPolicy(app.manifest)] as const))
+    const tools = this.registry.allTools().filter(entry => {
+      if (allowed && !allowed.has(entry.appId)) return false
+      const policy = policies.get(entry.appId)
+      return !policy || entry.tool.toolId === policy.overviewToolId
+    })
     if (tools.length === 0) return ''
+    const header = '当前电脑已接入以下本地软件能力（Muse Local Agent Hub）：'
+    const footer = '如需调用，请输出 JSON：{"action":"local_tool","appId":"...","toolId":"...","parameters":{...}}'
+    const truncated = '工具清单已截断；请通过 Hub 面板查看其余能力。'
     const lines: string[] = []
-    let size = 0
+    let size = header.length + footer.length + truncated.length + 3
     for (const entry of tools.slice(0, 100)) {
       const schema = JSON.stringify(entry.tool.inputSchema)
       const trust = this.registry.isTrusted(entry.appId, entry.tool.toolId) ? ' [已信任]' : ''
+      const policy = policies.get(entry.appId)
+      const exploration = policy ? `\n   exploration: ${JSON.stringify({ version: policy.version, overviewToolId: policy.overviewToolId, discoverToolId: policy.discoverToolId, readToolId: policy.readToolId, revision: policy.revision })}\n   muse-software/1: Start with overview; discovery/read tool schemas follow in per-step results. unsupported/unavailable stops exploration.` : ''
       const line = `${lines.length + 1}. ${entry.appName.slice(0, 200)} (${entry.appId}) — ${entry.tool.name.slice(0, 200)} [${entry.tool.riskLevel}]${trust}
    toolId: ${entry.tool.toolId}
    ${entry.tool.description.slice(0, 1000)}
-   inputSchema: ${schema}`
-      if (schema.length > 8000 || size + line.length > 24000) continue
+   inputSchema: ${schema}${exploration}`
+      if (schema.length > 8000 || size + line.length + 1 > 24000) continue
       lines.push(line)
-      size += line.length
+      size += line.length + 1
     }
-    if (lines.length < tools.length) lines.push('工具清单已截断；请通过 Hub 面板查看其余能力。')
-    return [
-      '当前电脑已接入以下本地软件能力（Muse Local Agent Hub）：',
-      ...lines,
-      '如需调用，请输出 JSON：{"action":"local_tool","appId":"...","toolId":"...","parameters":{...}}',
-    ].join('\n')
+    if (lines.length < tools.length) lines.push(truncated)
+    return [header, ...lines, footer].join('\n')
   }
 }
