@@ -82,6 +82,9 @@ export class HubRegistry {
     if (!manifest.secret || typeof manifest.secret !== 'string' || manifest.secret.length < 8) {
       return { ok: false, error: 'secret must be at least 8 characters.' }
     }
+    if (manifest.keywords !== undefined && (!Array.isArray(manifest.keywords) || manifest.keywords.some(k => typeof k !== 'string' || !k.trim() || k.length > 50) || manifest.keywords.length > 30)) {
+      return { ok: false, error: 'keywords must be an array of non-empty strings (max 30 items, max 50 chars each).' }
+    }
     if (!Array.isArray(manifest.tools) || manifest.tools.length === 0) {
       return { ok: false, error: 'at least one tool must be declared.' }
     }

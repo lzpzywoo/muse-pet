@@ -29,6 +29,7 @@ export interface AppManifest {
   description: string
   icon?: string
   secret: string
+  keywords?: string[]
   tools: ToolDefinition[]
 }
 

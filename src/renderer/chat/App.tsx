@@ -43,7 +43,60 @@ import {
   Lightbulb,
   Cpu as CpuIcon,
   Plug,
+  Wrench,
 } from 'lucide-react'
+
+function parseToolResultContent(content: string): {
+  isToolResult: boolean
+  appId?: string
+  toolId?: string
+  status?: string
+  resultSummary?: string
+  surroundingText?: string
+} {
+  const match = content.match(/\[MUSE_LOCAL_TOOL_RESULT\]\s*([\s\S]*?)\s*\[\/MUSE_LOCAL_TOOL_RESULT\]/)
+  if (!match) return { isToolResult: false }
+  let data: any = null
+  try {
+    data = JSON.parse(match[1])
+  } catch {}
+  const surroundingText = content.replace(/\[MUSE_LOCAL_TOOL_RESULT\][\s\S]*?\[\/MUSE_LOCAL_TOOL_RESULT\]/g, '').trim()
+  const res = data?.result
+  let resultSummary = ''
+  if (res && typeof res === 'object') {
+    if (res.summary) resultSummary = String(res.summary)
+    else if (res.message) resultSummary = String(res.message)
+    else if (Array.isArray(res.sessions)) resultSummary = `共 ${res.sessions.length} 个会话`
+    else if (Array.isArray(res.paths)) resultSummary = `找到 ${res.paths.length} 个文件`
+    else if (res.image) resultSummary = '已采集画面图像'
+    else if (res.snapshot) resultSummary = '系统快照数据'
+    else resultSummary = JSON.stringify(res).slice(0, 100)
+  } else if (res) {
+    resultSummary = String(res).slice(0, 100)
+  }
+  return {
+    isToolResult: true,
+    appId: data?.appId,
+    toolId: data?.toolId,
+    status: data?.status || 'completed',
+    resultSummary,
+    surroundingText,
+  }
+}
+
+function sanitizeUserDisplayContent(content: string): {
+  cleanText: string
+  hasLocalTools: boolean
+  hasLocalContext: boolean
+} {
+  const hasLocalTools = content.includes('[MUSE_LOCAL_TOOLS]')
+  const hasLocalContext = content.includes('[MUSE_LOCAL_CONTEXT]')
+  const cleanText = content
+    .replace(/\[MUSE_LOCAL_TOOLS\][\s\S]*?\[\/MUSE_LOCAL_TOOLS\]/g, '')
+    .replace(/\[MUSE_LOCAL_CONTEXT\][\s\S]*?\[\/MUSE_LOCAL_CONTEXT\]/g, '')
+    .trim()
+  return { cleanText, hasLocalTools, hasLocalContext }
+}
 
 function formatHubRelativeTime(ts: number): string {
   if (!ts) return '未知'
@@ -120,6 +173,40 @@ function MarkdownContent({
           const firstLineEnd = part.indexOf('\n')
           const language = firstLineEnd !== -1 ? part.slice(3, firstLineEnd).trim() : ''
           const code = firstLineEnd !== -1 ? part.slice(firstLineEnd + 1, -3) : part.slice(3, -3)
+
+          // If this code block is a Hub local_tool call, render a sleek tool dispatch card
+          let localToolCall: { action: string; appId: string; toolId: string; parameters?: Record<string, unknown> } | null = null
+          try {
+            const trimmed = code.trim()
+            if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+              const parsed = JSON.parse(trimmed)
+              if (parsed && parsed.action === 'local_tool' && typeof parsed.appId === 'string' && typeof parsed.toolId === 'string') {
+                localToolCall = parsed
+              }
+            }
+          } catch {}
+
+          if (localToolCall) {
+            return (
+              <div
+                key={index}
+                className="my-2 px-3.5 py-2.5 rounded-xl bg-sky-950/40 border border-sky-400/35 flex items-center justify-between text-xs font-terminal shadow-inner"
+              >
+                <div className="flex items-center gap-2">
+                  <Wrench className="w-3.5 h-3.5 text-sky-400 animate-pulse" />
+                  <span className="text-sky-200">
+                    调用本地能力: <span className="font-semibold text-white">{localToolCall.appId}</span>
+                    <span className="text-slate-400"> / </span>
+                    <span className="text-sky-300">{localToolCall.toolId}</span>
+                  </span>
+                </div>
+                <span className="px-2 py-0.5 rounded text-[10px] bg-sky-500/15 border border-sky-400/30 text-sky-300">
+                  Hub 调度中
+                </span>
+              </div>
+            )
+          }
+
           const isRunnableShell = /^(powershell|ps1|pwsh|shell|sh|cmd|bat|bash|)$/i.test(language)
 
           return (
@@ -2064,11 +2151,58 @@ export default function ChatApp() {
                           {msg.content.split('\n').find(l => l.startsWith('Capture started:')) || ''}
                         </span>
                       </div>
-                    ) : (
-                      <div className="font-terminal text-[13px] text-sky-100 whitespace-pre-wrap break-words">
-                        {msg.content}
-                      </div>
-                    )}
+                    ) : (() => {
+                      const toolRes = parseToolResultContent(msg.content)
+                      if (toolRes.isToolResult) {
+                        return (
+                          <div className="space-y-1.5 font-terminal text-[11.5px]">
+                            <div className="flex items-center gap-2 text-fuchsia-200">
+                              <span className="px-2 py-0.5 rounded-md bg-fuchsia-500/20 border border-fuchsia-400/40 flex items-center gap-1">
+                                <Wrench className="w-3 h-3 text-fuchsia-300" />
+                                <span>本地工具结果已返回 ({toolRes.appId ? `${toolRes.appId} / ${toolRes.toolId}` : 'local_tool'})</span>
+                              </span>
+                              <span className={`text-xs ${toolRes.status === 'completed' ? 'text-emerald-300' : 'text-rose-300'}`}>
+                                {toolRes.status === 'completed' ? '✓ 执行完成' : '✕ 失败'}
+                              </span>
+                            </div>
+                            {toolRes.resultSummary && (
+                              <div className="text-xs text-slate-400 pl-1 font-mono truncate">
+                                {toolRes.resultSummary}
+                              </div>
+                            )}
+                            {toolRes.surroundingText ? (
+                              <div className="font-terminal text-[13px] text-sky-100 whitespace-pre-wrap break-words pt-1">
+                                {toolRes.surroundingText}
+                              </div>
+                            ) : null}
+                          </div>
+                        )
+                      }
+                      const { cleanText, hasLocalTools, hasLocalContext } = sanitizeUserDisplayContent(msg.content)
+                      return (
+                        <div className="space-y-1.5">
+                          <div className="font-terminal text-[13px] text-sky-100 whitespace-pre-wrap break-words">
+                            {cleanText || (hasLocalTools ? '/hub' : msg.content)}
+                          </div>
+                          {(hasLocalTools || hasLocalContext) && (
+                            <div className="flex items-center gap-2 pt-0.5">
+                              {hasLocalTools && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-sky-500/15 border border-sky-400/25 text-sky-300 font-terminal">
+                                  <Wrench className="w-2.5 h-2.5" />
+                                  <span>已挂载本地能力</span>
+                                </span>
+                              )}
+                              {hasLocalContext && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/15 border border-emerald-400/25 text-emerald-300 font-terminal">
+                                  <FileText className="w-2.5 h-2.5" />
+                                  <span>包含本地上下文</span>
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                     {msg.attachments && msg.attachments.length > 0 && (
                       <div className="flex flex-wrap gap-2 pt-1">
                         {msg.attachments.map((att, aIdx) =>
@@ -2154,7 +2288,14 @@ export default function ChatApp() {
                     <span>·</span>
                     <span>stdout</span>
                   </div>
-                  {msg.content ? (
+                  {msg.content.startsWith('工具结果已') && msg.content.includes('[MUSE_LOCAL_TOOL_RESULT]') ? (
+                    <div className="flex items-center gap-2 font-terminal text-[11.5px] text-fuchsia-200 py-0.5">
+                      <span className="px-2 py-0.5 rounded-md bg-fuchsia-500/20 border border-fuchsia-400/40 flex items-center gap-1">
+                        <Check className="w-3 h-3 text-fuchsia-300" />
+                        <span>本地工具结果已同步到会话</span>
+                      </span>
+                    </div>
+                  ) : msg.content ? (
                     <MarkdownContent
                       content={msg.content}
                       isStreaming={msg.status === 'streaming'}

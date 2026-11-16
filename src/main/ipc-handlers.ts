@@ -197,8 +197,10 @@ export function registerIpcHandlers(
   const preserveLocalHubMessages = (cloud: ChatMessage[]): ChatMessage[] => {
     const ids = new Set(cloud.map(message => message.id))
     const actionIds = new Set(cloud.map(message => message.pendingAction?.id).filter(Boolean))
+    const cloudHasTask = (taskId: string) => cloud.some(m => m.content?.includes(taskId))
     const local = messageHistory.filter(message =>
-      message.pendingAction?.type === 'hub_tool' || message.id.startsWith('hub-result-'))
+      message.pendingAction?.type === 'hub_tool' ||
+      (message.id.startsWith('hub-result-') && !cloudHasTask(message.id.replace('hub-result-', ''))))
     const pending = local.filter(message => message.pendingAction?.status === 'pending')
     const recent = local.filter(message => message.pendingAction?.status !== 'pending').slice(-20)
     return [...cloud, ...[...pending, ...recent].filter(message => !ids.has(message.id) &&
@@ -214,6 +216,9 @@ export function registerIpcHandlers(
 
   const hubLedgerPath = path.join(app.getPath('userData'), 'hub_conversations.json')
   const showHubDelivery = (delivery: HubConversationDelivery, note: string) => {
+    if (messageHistory.some(m => !m.id.startsWith('hub-result-') && m.content?.includes(delivery.taskId))) {
+      return
+    }
     const id = `hub-result-${delivery.taskId}`
     const message: ChatMessage = {
       id,
