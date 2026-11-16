@@ -644,7 +644,8 @@ export class MuseClient {
       const defaultPath = path.join(snapshotDir, 'default.mp4')
       const workingPath = path.join(snapshotDir, 'working.mp4')
       const resumePath = path.join(snapshotDir, 'resume.mp4')
-      if (meta.snapshot && ![defaultPath, workingPath, resumePath].every(p => fs.existsSync(p))) return null
+      const imageOnly = meta.mediaKind === 'image'
+      if (meta.snapshot && (imageOnly ? !fs.existsSync(staticPath) : ![defaultPath, workingPath, resumePath].every(p => fs.existsSync(p)))) return null
 
       const ts = meta.updatedAt || Date.now()
       const toUrl = (p: string) => (fs.existsSync(p) ? `${pathToFileURL(p).href}?v=${ts}` : undefined)
@@ -652,7 +653,7 @@ export class MuseClient {
       return {
         agentName: meta.agentName || 'Muse',
         staticImageUrl: meta.staticDataUrl || toUrl(staticPath),
-        videos: {
+        videos: imageOnly ? undefined : {
           default: toUrl(defaultPath),
           working: toUrl(workingPath) || toUrl(defaultPath),
           resume: toUrl(resumePath) || toUrl(defaultPath),
@@ -867,7 +868,9 @@ export class MuseClient {
           try {
             const [staticB64, defaultB64, workingB64, resumeB64] = await Promise.all([
               source.staticUrl ? toDataUrl(source.staticUrl) : Promise.resolve(null),
-              toDataUrl(source.defaultUrl), toDataUrl(source.workingUrl), toDataUrl(source.resumeUrl),
+              source.defaultUrl ? toDataUrl(source.defaultUrl) : Promise.resolve(null),
+              source.workingUrl ? toDataUrl(source.workingUrl) : Promise.resolve(null),
+              source.resumeUrl ? toDataUrl(source.resumeUrl) : Promise.resolve(null),
             ])
             // Reject a bundle if the outfit changed while its blobs were being read.
             if (readSource(document)?.avatarSignature !== source.avatarSignature) return { ok: false }
@@ -880,9 +883,11 @@ export class MuseClient {
       `)
 
       if (!isCurrentSession() || !extracted?.ok || !extracted.avatarSignature ||
-          !extracted.defaultB64 || !extracted.workingB64 || !extracted.resumeB64) {
+          (!extracted.staticB64 && !extracted.defaultB64) ||
+          (extracted.defaultB64 && (!extracted.workingB64 || !extracted.resumeB64))) {
         return this.getCachedAvatarAssets()
       }
+      const mediaKind = extracted.defaultB64 ? 'video' : 'image'
 
       const dir = this.getAvatarCacheDir()
       const mediaHash = crypto.createHash('sha256')
@@ -920,14 +925,16 @@ export class MuseClient {
         fs.writeFileSync(path.join(stagedDir!, filename), data)
       }
       if (extracted.staticB64) writeDataUrl('avatar.webp', extracted.staticB64)
-      writeDataUrl('default.mp4', extracted.defaultB64)
-      writeDataUrl('working.mp4', extracted.workingB64)
-      writeDataUrl('resume.mp4', extracted.resumeB64)
+      if (mediaKind === 'video') {
+        writeDataUrl('default.mp4', extracted.defaultB64!)
+        writeDataUrl('working.mp4', extracted.workingB64!)
+        writeDataUrl('resume.mp4', extracted.resumeB64!)
+      }
 
       const updatedAt = Date.now()
       stagedMeta = path.join(dir, `${snapshot}.json`)
       fs.writeFileSync(stagedMeta, JSON.stringify({
-        snapshot, agentName: extracted.agentName || 'Muse',
+        snapshot, mediaKind, agentName: extracted.agentName || 'Muse',
         avatarSignature: extracted.avatarSignature, mediaHash, account: pcAccount(cookies),
         staticDataUrl: extracted.staticB64 || undefined, updatedAt,
       }), 'utf-8')

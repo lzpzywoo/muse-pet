@@ -17,7 +17,9 @@ function hooks(values) {
 function stage(outfit = 'new', options = {}) {
   const urls = { default: `blob:${outfit}-default`, working: `blob:${outfit}-working`, resume: `blob:${outfit}-resume` }
   const video = {
-    src: urls.default, currentSrc: '',
+    tagName: options.image ? 'IMG' : 'VIDEO',
+    getAttribute: name => name === 'data-hatch-avatar-slot' ? (options.slot || 'current') : name === 'data-hatch-avatar-layer' ? 'ready' : null,
+    src: options.image ? `blob:${outfit}-image` : urls.default, currentSrc: '',
     closest: () => options.chat ? {} : null,
     querySelector: () => null,
     __reactFiberTest: { memoizedState: hooks([{ current: { value: `blob:${outfit}-image` } }, urls]),
@@ -28,7 +30,7 @@ function stage(outfit = 'new', options = {}) {
 function documentFor(videos) {
   return {
     title: 'Chat — Luna',
-    querySelectorAll: selector => selector === 'video[data-hatch-avatar-layer]' ? videos : [],
+    querySelectorAll: selector => selector.includes('[data-hatch-avatar-layer]') ? videos : [],
     querySelector: () => ({ innerText: 'Luna\nStatus' }),
   }
 }
@@ -63,11 +65,11 @@ function harness(t, fixture = stage()) {
       h.fetched.push(url)
       if (h.fetchGate) await h.fetchGate.promise
       if (h.failUrls.has(url)) throw new Error('mock unavailable blob')
-      return { ok: !h.httpFailure, blob: async () => ({ size: h.emptyBlob ? 0 : 1, url }) }
+      return { ok: !h.httpFailure, blob: async () => ({ size: h.emptyBlob ? 0 : 1, url, type: /-image$/.test(url) ? 'image/webp' : 'video/mp4' }) }
     },
     FileReader: class {
       readAsDataURL(blob) {
-        this.result = `data:video/mp4;base64,${Buffer.from(blob.url).toString('base64')}`
+        this.result = `data:${blob.type || 'video/mp4'};base64,${Buffer.from(blob.url).toString('base64')}`
         queueMicrotask(() => h.readerFailure ? this.onerror() : this.onload())
       }
     },
@@ -158,6 +160,45 @@ test('chat preview videos never substitute for a missing main stage', async t =>
   assert.equal(h.calls, 0)
   assert.equal(await h.client.syncAvatarAssets(true), null)
   assert.deepEqual(h.fetched, [])
+})
+
+test('live IMG-only avatar publishes the current static image without waiting for videos', async t => {
+  const h = harness(t, stage('halloween', { image: true }))
+  await h.poll()
+  const assets = h.client.getCachedAvatarAssets()
+  assert.ok(assets.staticImageUrl.startsWith('data:image/webp;'))
+  assert.equal(assets.videos, undefined)
+  assert.deepEqual(h.fetched, ['blob:halloween-image'])
+  assert.equal(JSON.parse(h.meta()).mediaKind, 'image')
+  assert.equal(h.events.length, 1)
+})
+
+test('new static outfit replaces old video assets, then upgrades when current animations appear', async t => {
+  const h = harness(t, stage('old'))
+  const old = await h.client.syncAvatarAssets()
+  h.fixture = stage('halloween', { image: true })
+  h.context.document = documentFor([h.fixture.video])
+  await h.poll()
+  const image = h.client.getCachedAvatarAssets()
+  assert.equal(image.videos, undefined)
+  assert.notEqual(image.staticImageUrl, old.staticImageUrl)
+  h.change('halloween')
+  await h.poll()
+  const animated = h.client.getCachedAvatarAssets()
+  assert.equal(h.media(animated.videos.default), 'blob:halloween-default')
+  assert.equal(animated.staticImageUrl, image.staticImageUrl)
+  assert.equal(h.events.length, 3)
+})
+
+test('outgoing old video and chat IMG cannot override a current ready image layer', async t => {
+  const h = harness(t)
+  const old = stage('old', { slot: 'previous' })
+  const current = stage('current', { image: true })
+  const chat = stage('chat', { image: true, chat: true })
+  h.context.document = documentFor([old.video, chat.video, current.video])
+  const assets = await h.client.syncAvatarAssets(true)
+  assert.equal(assets.videos, undefined)
+  assert.deepEqual(h.fetched, ['blob:current-image'])
 })
 
 test('nearest current hooks supply the bundle; older ancestor maps and chat widgets are ignored', async t => {

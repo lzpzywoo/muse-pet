@@ -31,7 +31,7 @@ Instead of a static sticker or an intrusive rectangular widget, Muse Pet extract
 - **Automatic Asset Synchronization**: Extracts multi-state 720p MP4 animations (`default` idle breathing, `working` thinking, `resume` talking) and 1600px WebP portraits from `muse.ai` and caches them locally under `userData/avatar_cache/`.
 - **Real-Time Studio Backdrop Cutout**: Runs a 4-border-seeded BFS flood fill + 1–2px boundary color de-spilling algorithm at 30 FPS on `<canvas>`, removing the white studio background and circular backing plate while preserving interior whites (eyes, teeth, highlights).
 - **Pixel-Level Alpha Hit-Testing**: Uses the live cutout mask (`bgMaskRef`) with `setIgnoreMouseEvents(true, { forward: true })`. Only opaque character pixels, active speech bubbles, or mounted widgets capture the mouse—all surrounding transparent pixels pass clicks straight through to your desktop and underlying windows.
-- **Live Outfit Hot-Reload**: Automatically detects when you change your character's outfit or hairstyle on `muse.ai` and hot-reloads the desktop pet without restarting.
+- **Live Outfit Hot-Reload**: Detects current image or video avatar layers on `muse.ai`. If a new outfit is available only as a portrait, the desktop immediately switches to that portrait instead of replaying the previous outfit's animations, then upgrades when current motion clips become available.
 
 ### 2. 🖥️ Spotlight Liquid Glass Terminal (`Alt + Space`)
 - **Instant Quake / Spotlight Summon**: Press `Alt + Space` from any application or click the desktop pet to summon the terminal at the upper-center of your screen; press `Esc` to dismiss.
