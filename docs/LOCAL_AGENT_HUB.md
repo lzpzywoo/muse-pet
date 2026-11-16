@@ -21,6 +21,7 @@
    - [Python](#python)
    - [cURL / Shell](#curl--bash)
 6. [Testing & Debugging](#-testing--debugging)
+7. [Third-Party Integration & ThinkRail Guide](./THIRD_PARTY_HUB_GUIDE.md)
 
 ---
 
@@ -150,11 +151,12 @@ When your application boots, it describes its capabilities to the Hub:
 ```typescript
 interface AppManifest {
   appId: string           // Unique identifier (3-80 chars: a-z, 0-9, ., _, -)
-  name: string            // Human-readable title
+  name: string            // Human-readable title (e.g. "ThinkRail 会话管理器")
   version: string         // Semantic version
   description: string     // Clear explanation so Luna knows WHEN to call your app
   secret: string          // Secret key (min 8 chars) used to verify WebSocket and recover tokens
   icon?: string           // Base64 or local image URL
+  keywords?: string[]     // Optional natural language keywords & aliases for fast intent discovery
   tools: ToolDefinition[] // Array of exposed actions/queries
 }
 
