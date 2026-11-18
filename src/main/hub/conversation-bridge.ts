@@ -62,7 +62,7 @@ const userRequest = (text: string) => normalizeReport(text).replace(/\[MUSE_LOCA
 const stable = (id: string) => !!id.trim() && !/^cloud-\d+$/.test(id)
 
 // Only transport line endings and known role labels are normalized.
-const normalizeReport = (text: string) => text.replace(/\r\n/g, '\n').replace(/^(?:用户消息|用户|你|you|user|human)[:：] ?/i, '')
+const normalizeReport = (text: string) => text.replace(/\r\n/g, '\n').replace(/^(?:用户消息|用户|你|you|user|human)[:：][ \t]*(?:\n[ \t]*){0,2}/i, '')
 const canonical = (value: unknown): string => JSON.stringify(value, (_key, item) =>
   item && typeof item === 'object' && !Array.isArray(item)
     ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item)

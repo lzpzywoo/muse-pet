@@ -140,8 +140,13 @@ Adapters must explicitly differentiate between empty data, unsupported features,
 - **Termination Triggers**: Exploration stops immediately upon duplicate calls, non-progress, non-ok status (`unsupported` / `unavailable`), policy revision mismatch, offline events, receipt of a new user prompt, or explicit `/hub stop` command.
 - **No Cross-Talk**: Only the three declared read-only endpoints of the same application may be invoked.
 - **Data Not Code**: Third-party guide data is treated as untrusted information; it cannot grant elevated permissions or convert read-only access into write operations.
+- **Transport Labels**: Receipt matching removes only recognized leading role labels (including up to two line breaks inserted by the Muse page) and CRLF differences. Other wrappers, added trailing whitespace, forged payloads, and reused receipts remain unauthorized.
+- **Display Projection**: The desktop conversation hides internal request/result JSON, controller schemas, successful delivery placeholders, and empty role labels. Canonical history and the execution ledger remain unchanged. Natural-language answers, image attachments, errors, and approval controls remain visible; `/hub` retains task diagnostics.
+- **Scheduling**: Idle observation stays at 4.5 seconds. Bounded active windows use lightweight 500 ms observation with an immediate post-turn check; rich media synchronization is single-flight and paced independently. These changes remove local waiting, not cloud model generation time.
 
 ---
+
+See [Hub Conversation Performance and Diagnostics](./HUB_PERFORMANCE.md) for stage-by-stage measurement and adapter profiling without logging private task data.
 
 ## 4. Adapting Your ThinkRail Integration
 

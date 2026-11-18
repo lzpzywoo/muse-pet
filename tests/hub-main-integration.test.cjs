@@ -119,7 +119,10 @@ test('actual IPC registration connects phone observations, tracked builtins and 
   }
   const sends = [], events = [], outgoing = []
   let observer, cloudUpdate
-  const cloudHistory = [{ id: 'cloud-user', role: 'user', content: 'Use my tool', timestamp: Date.now() }]
+  const storedReport = '[MUSE_LOCAL_TOOL_RESULT]\n{"taskId":"old-task","status":"completed","appId":"system.sys","result":{"snapshot":"preserve canonical report"}}\n[/MUSE_LOCAL_TOOL_RESULT]'
+  const cloudHistory = [{ id: 'cloud-user', role: 'user', content: 'Use my tool', timestamp: Date.now() },
+    { id: 'old-report', role: 'user', content: storedReport, timestamp: Date.now() }]
+  fs.writeFileSync(path.join(temp, 'chat_history.json'), JSON.stringify(cloudHistory))
   const muse = {
     onPcObservation: callback => { observer = callback },
     startCloudMessageWatcher() {}, onCloudBrowserStatus() {}, onCloudMessagesUpdated(callback) { cloudUpdate = callback }, onAvatarSynced() {},
@@ -139,6 +142,7 @@ test('actual IPC registration connects phone observations, tracked builtins and 
   t.after(() => { activeHub?.stop(); fs.rmSync(temp, { recursive: true, force: true }) })
   registerIpcHandlers(windows, muse, { getCookies: () => 'hatch_sess=test', getProfile: () => ({ isLoggedIn: true }) }, {})
   await activeHub.started
+  assert.ok((await handlers.get('chat:get-messages')({})).some(message => message.content === storedReport), 'display hiding must not delete canonical reports')
   for (const text of ['yoho. fish fish , 换一件万圣节的衣服吧', '帮我换一件万圣节的衣服吧', '帮我换个桌宠的造型', '帮我写一首诗', 'hello fish fish']) {
     await handlers.get('chat:send-message')({}, text)
     assert.equal(outgoing.at(-1), text, 'ordinary chat must reach Muse unchanged')
@@ -178,4 +182,19 @@ test('actual IPC registration connects phone observations, tracked builtins and 
   const result = await handlers.get('secretary:approve-action')({}, 'approval-1')
   assert.equal(result.status, 'denied')
   assert.equal(task.status, 'cancelled')
+  assert.ok(!synced.some(message => message.id.startsWith('hub-result-')), 'successful reports must not add synthetic chat bubbles')
+  muse.sendHubReport = async () => { throw new Error('submission uncertain') }
+  await observer({ ...base, messages: [
+    { id: 'old', role: 'user', content: 'Hello' },
+    { id: 'ask', role: 'user', content: 'Use the tool\n[MUSE_LOCAL_TOOLS]catalog[/MUSE_LOCAL_TOOLS]' },
+    { id: 'answer', role: 'assistant', content: JSON.stringify({ action: 'local_tool', appId: 'system.sys', toolId: 'snapshot', parameters: {} }) },
+    { id: 'new-ask', role: 'user', content: 'Use this tool again' },
+    { id: 'new-answer', role: 'assistant', content: JSON.stringify({ action: 'local_tool', appId: 'system.sys', toolId: 'snapshot', parameters: {} }) },
+  ] })
+  for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve))
+  const failedHistory = await handlers.get('chat:get-messages')({})
+  const notice = failedHistory.find(message => message.id.startsWith('hub-delivery-error-'))
+  assert.ok(notice && /不确定/.test(notice.content))
+  assert.ok(!notice.content.includes('[MUSE_LOCAL_TOOL_RESULT]'))
+  assert.ok(failedHistory.some(message => message.content === storedReport))
 })

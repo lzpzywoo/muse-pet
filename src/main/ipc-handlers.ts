@@ -7,13 +7,14 @@ import { SessionStore } from './session-store'
 import { ProxyManager } from './proxy-manager'
 import { LocalSecretary } from './local-secretary'
 import { hostname } from 'node:os'
+import { createHash } from 'node:crypto'
 import { PcStatusBridge, pcAccount } from './pc-status-bridge'
 import { HubServer, HUB_PORT } from './hub/hub-server'
 import { SystemScreenApp, SYSTEM_SCREEN_APP_ID } from './hub/builtins/system-screen'
 import { SystemSysApp, SYSTEM_SYS_APP_ID } from './hub/builtins/system-sys'
 import { SystemFilesApp, SYSTEM_FILES_APP_ID } from './hub/builtins/system-files'
 import type { HubEvent, LocalToolCall } from './hub/sdk-types'
-import { HubConversationBridge, type HubConversationDelivery, type HubConversationLedger } from './hub/conversation-bridge'
+import { HubConversationBridge, type HubConversationLedger } from './hub/conversation-bridge'
 import { isPcReportNotSubmitted } from './pc-status-bridge'
 import { waitForHubResult } from './hub/task-result'
 import { isAvatarAppearanceRequest, isLocalWriteRequest, selectHubIntentAppIds } from './local-request-intent'
@@ -198,14 +199,15 @@ export function registerIpcHandlers(
   const preserveLocalHubMessages = (cloud: ChatMessage[]): ChatMessage[] => {
     const ids = new Set(cloud.map(message => message.id))
     const actionIds = new Set(cloud.map(message => message.pendingAction?.id).filter(Boolean))
-    const cloudHasTask = (taskId: string) => cloud.some(m => m.content?.includes(taskId))
-    const local = messageHistory.filter(message =>
+    const local = messageHistory.filter(message => !ids.has(message.id) && (
       message.pendingAction?.type === 'hub_tool' ||
-      (message.id.startsWith('hub-result-') && !cloudHasTask(message.id.replace('hub-result-', ''))))
+      message.id.startsWith('hub-delivery-error-') || message.id.startsWith('hub-stop-') ||
+      (message.id.startsWith('hub-result-') && !cloud.some(m => m.content.includes('[MUSE_LOCAL_TOOL_RESULT]') && m.content.includes(message.id.slice('hub-result-'.length))))
+    ))
     const pending = local.filter(message => message.pendingAction?.status === 'pending')
     const recent = local.filter(message => message.pendingAction?.status !== 'pending').slice(-20)
-    return [...cloud, ...[...pending, ...recent].filter(message => !ids.has(message.id) &&
-      (!message.pendingAction || !actionIds.has(message.pendingAction.id)))]
+    return [...cloud, ...[...pending, ...recent].filter(message =>
+      !message.pendingAction || !actionIds.has(message.pendingAction.id))]
   }
 
   const broadcastMessagesSynced = () => {
@@ -216,23 +218,21 @@ export function registerIpcHandlers(
   }
 
   const hubLedgerPath = path.join(app.getPath('userData'), 'hub_conversations.json')
-  const showHubDelivery = (delivery: HubConversationDelivery, note: string) => {
-    if (messageHistory.some(m => !m.id.startsWith('hub-result-') && m.content?.includes(delivery.taskId))) {
-      return
-    }
-    const id = `hub-result-${delivery.taskId}`
-    const message: ChatMessage = {
-      id,
-      role: 'assistant',
-      content: `${note}\n\n${delivery.body}`,
-      timestamp: Date.now(),
-      status: 'done',
-    }
-    const index = messageHistory.findIndex(m => m.id === id)
-    if (index >= 0) messageHistory[index] = message
-    else messageHistory.push(message)
+  const showHubNotice = (id: string, content: string) => {
+    const notice: ChatMessage = { id, role: 'system', content, timestamp: Date.now(), status: 'done' }
+    const index = messageHistory.findIndex(message => message.id === id)
+    if (index >= 0) messageHistory[index] = notice
+    else messageHistory.push(notice)
     savePersistedHistory()
     broadcastMessagesSynced()
+  }
+  const clearHubDeliveryError = (taskId: string) => {
+    const next = messageHistory.filter(message => message.id !== `hub-delivery-error-${taskId}`)
+    if (next.length !== messageHistory.length) {
+      messageHistory = next
+      savePersistedHistory()
+      broadcastMessagesSynced()
+    }
   }
   const hubConversation = new HubConversationBridge({
     load: () => {
@@ -269,7 +269,6 @@ export function registerIpcHandlers(
       }
     },
     send: async delivery => {
-      showHubDelivery(delivery, '工具结果已就绪，正在同步到原会话。')
       try {
         const image = delivery.options?.image
         const match = image?.match(/^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/=]+)$/)
@@ -278,14 +277,24 @@ export function registerIpcHandlers(
           imageBase64: match[2], imageMimeType: match[1], imageFileName: 'hub-screen.' + (match[1] === 'image/png' ? 'png' : 'jpg'),
         } : undefined)
       } catch (err) {
-        showHubDelivery(delivery, isPcReportNotSubmitted(err)
-          ? '工具结果已保留，等待原会话空闲后发送。'
-          : '工具结果发送状态不确定，已停止自动重发；如有需要，请手动重新请求。')
+        showHubNotice(`hub-delivery-error-${delivery.taskId}`, isPcReportNotSubmitted(err)
+          ? '工具结果尚未提交，正在等待原会话空闲；不会重新执行工具。'
+          : '工具结果发送状态不确定，已停止自动重发。请检查原会话，需要时重新发起请求。')
         throw err
       }
     },
     isNotSubmitted: isPcReportNotSubmitted,
-    onDelivery: delivery => showHubDelivery(delivery, '工具结果已提交到原会话。'),
+    onDelivery: delivery => clearHubDeliveryError(delivery.taskId),
+    onExplorationStopped: info => {
+      if (/Assistant completed exploration|Superseded by a new user|Restart interrupted/.test(info.reason)) return
+      const explanation = /budget|deadline/i.test(info.reason) ? '已达到查询次数或时间上限'
+        : /unavailable|offline/i.test(info.reason) ? '软件状态暂不可用或连接已变化'
+          : /unsupported/i.test(info.reason) ? '该软件尚不支持所需查询'
+            : /Cancelled|cancelled/i.test(info.reason) ? '查询已取消'
+              : /Repeated|no progress/i.test(info.reason) ? '连续查询没有取得新信息'
+                : '查询遇到异常或结果无法确认'
+      showHubNotice(`hub-stop-${createHash('sha256').update(info.rootId).digest('hex').slice(0, 16)}`, `软件查询已停止：${explanation}。已取得的任务结果可在 /hub 查看。`)
+    },
   })
 
   loadPersistedHistory()

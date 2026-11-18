@@ -174,6 +174,7 @@ export class MuseClient {
 
   private pcObserver?: (observation: PcObservation) => Promise<void>
   private pcPolling = false
+  private pcObservationRequested = false
   public onPcObservation(cb: (observation: PcObservation) => Promise<void>) { this.pcObserver = cb }
   public pcAvailable(): boolean {
     return !!this.museWindow && !this.museWindow.isDestroyed() && !this.museWindow.isVisible() &&
@@ -217,12 +218,22 @@ export class MuseClient {
         return { conversation: location.origin + location.pathname, epoch: window.__pcObservationEpoch, ready, messages }
       })()`)
       if (account !== pcAccount(this.sessionStore.getCookies())) return
-      await this.pcObserver({ ...observation, account })
+      await this.pcObserver({ ...observation, account, ready: observation.ready && !this.isSendingChat })
     } catch {
       await this.pcObserver({ account, conversation: '', ready: false, messages: [] })
-    } finally { this.pcPolling = false }
+    } finally {
+      this.pcPolling = false
+      if (this.pcObservationRequested) {
+        this.pcObservationRequested = false
+        void this.pollPcObservation().catch(() => {})
+      }
+    }
   }
   public async refreshToolObservation(): Promise<void> {
+    if (this.pcPolling) {
+      this.pcObservationRequested = true
+      return
+    }
     await this.pollPcObservation()
   }
 
@@ -251,6 +262,8 @@ export class MuseClient {
     }
     this.aborted = false
     this.isSendingChat = true
+    if (hubBridge) this.boostObservationSpeed()
+    let completed = false
     try {
       let submitError: string | null = null
       await this.sendViaMuseWindow(
@@ -269,6 +282,7 @@ export class MuseClient {
       }
       // Anything else after an attempted click (or unknown) stays uncertain: never blind-retry.
       if (submitError) throw new Error(submitError)
+      completed = true
     } catch (err) {
       if (err instanceof PcReportNotSubmitted) throw err
       // Failures before inject/click never submitted the report.
@@ -276,7 +290,10 @@ export class MuseClient {
         throw new PcReportNotSubmitted(err.message)
       }
       throw err
-    } finally { this.isSendingChat = false }
+    } finally {
+      this.isSendingChat = false
+      if (hubBridge && completed) this.refreshAfterCompletedTurn()
+    }
   }
 
   public isChatTurnActive(): boolean {
@@ -301,20 +318,56 @@ export class MuseClient {
     return this.cachedBrowserStatus
   }
 
-  public startCloudMessageWatcher() {
-    if (this.cloudWatchTimer) return
-    this.cloudWatchTimer = setInterval(() => {
+  private fastPollUntil = 0
+  private lastMessagePoll = 0
+  private lastBrowserPoll = 0
+  private cloudWatcherStarted = false
+
+  public boostObservationSpeed(durationMs = 20000) {
+    // A caller cannot leave the app polling rapidly indefinitely.
+    this.fastPollUntil = Math.max(this.fastPollUntil || 0, Date.now() + Math.max(0, Math.min(durationMs, 20000)))
+    if (this.cloudWatcherStarted) {
+      if (this.cloudWatchTimer) clearTimeout(this.cloudWatchTimer)
+      this.scheduleCloudWatch()
+    }
+  }
+
+  private refreshAfterCompletedTurn() {
+    this.boostObservationSpeed()
+    // The observer may itself be awaiting this send; queue one follow-up in that case.
+    void this.refreshToolObservation().catch(() => {})
+    this.lastMessagePoll = Date.now()
+    // Defer invocation too: partial test clients and setup failures must not throw from finally.
+    void Promise.resolve().then(() => this.fetchCloudMessages(true)).catch(() => {})
+  }
+
+  private scheduleCloudWatch() {
+    const delay = Date.now() < this.fastPollUntil ? 500 : 4500
+    this.cloudWatchTimer = setTimeout(() => {
+      this.cloudWatchTimer = null
+      const now = Date.now()
+      const active = now < this.fastPollUntil
       void this.pollPcObservation().catch(() => console.warn('PC status observation unavailable'))
-      if (!this.sessionStore.getProfile().isLoggedIn) {
-        return
+      if (this.sessionStore.getProfile().isLoggedIn) {
+        if (now - this.lastBrowserPoll >= 4500) {
+          this.lastBrowserPoll = now
+          void this.pollCloudBrowserStatus().catch(() => {})
+        }
+        if (!this.isSendingChat && !this.isFetchingCloudData &&
+            now - this.lastMessagePoll >= (active ? 1500 : 4500)) {
+          this.lastMessagePoll = now
+          void this.fetchCloudMessages(true).catch(() => {})
+        }
       }
-      // Browser status is cheap and should keep updating even while a chat turn streams.
-      this.pollCloudBrowserStatus().catch(() => {})
-      if (this.isSendingChat || this.isFetchingCloudData) {
-        return
-      }
-      this.fetchCloudMessages(true).catch(() => {})
-    }, 4500)
+      this.scheduleCloudWatch()
+    }, delay)
+  }
+
+  public startCloudMessageWatcher() {
+    if (this.cloudWatcherStarted) return
+    this.cloudWatcherStarted = true
+    this.lastMessagePoll = this.lastBrowserPoll = Date.now()
+    this.scheduleCloudWatch()
   }
 
   /**
@@ -417,7 +470,24 @@ export class MuseClient {
     }
   }
 
-  public async fetchCloudMessages(notifyIfChanged = false): Promise<ChatMessage[]> {
+  private cloudMessagesPromise: Promise<ChatMessage[]> | null = null
+  private cloudMessagesNotify = false
+
+  public fetchCloudMessages(notifyIfChanged = false): Promise<ChatMessage[]> {
+    this.cloudMessagesNotify ||= notifyIfChanged
+    if (this.cloudMessagesPromise) return this.cloudMessagesPromise
+    const pending = this.fetchCloudMessagesOnce()
+    this.cloudMessagesPromise = pending
+    const cleanup = () => {
+      this.cloudMessagesPromise = null
+      this.cloudMessagesNotify = false
+    }
+    // Do not create an unhandled rejecting finally promise.
+    void pending.then(cleanup, cleanup)
+    return pending
+  }
+
+  private async fetchCloudMessagesOnce(): Promise<ChatMessage[]> {
     const cookies = this.sessionStore.getCookies()
     if (!cookies) return []
     try {
@@ -594,7 +664,7 @@ export class MuseClient {
       const hasDigestChanged = newDigest !== this.lastCloudDigest
       this.lastCloudDigest = newDigest
 
-      if (notifyIfChanged && (hasDigestChanged || newAssistantMsg)) {
+      if (this.cloudMessagesNotify && (hasDigestChanged || newAssistantMsg)) {
         for (const cb of this.onCloudMessagesCallbacks) {
           cb(cloudMessages, newAssistantMsg)
         }
@@ -1509,7 +1579,9 @@ export class MuseClient {
     if (this.isSendingChat || this.isFetchingCloudData) { onError('Muse is busy; try again shortly.'); return }
     this.aborted = false
     this.isSendingChat = true
+    this.boostObservationSpeed()
     const cookies = this.sessionStore.getCookies()
+    let completed = false
 
     try {
       if (!cookies) {
@@ -1518,9 +1590,12 @@ export class MuseClient {
       }
 
       try {
-        await this.sendViaMuseWindow(content, cookies, onChunk, onEnd, onError, options)
-        // Sync cloud messages & attachments + detect any avatar change after our own turn finishes
-        await this.fetchCloudMessages(true)
+        let sendFailed = false
+        await this.sendViaMuseWindow(content, cookies, onChunk, onEnd, (error) => {
+          sendFailed = true
+          onError(error)
+        }, options)
+        completed = !this.aborted && !sendFailed
       } catch (err: any) {
         if (this.aborted) {
           onEnd('')
@@ -1532,6 +1607,8 @@ export class MuseClient {
       }
     } finally {
       this.isSendingChat = false
+      // Rich media/avatar synchronization must not hold the composer lock.
+      if (completed) this.refreshAfterCompletedTurn()
     }
   }
 
